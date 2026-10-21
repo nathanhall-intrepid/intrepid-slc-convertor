@@ -9,7 +9,11 @@ Layer Studio converts STL geometry into an SLC 2.0 build with variable layer thi
 3. Select **Scan & optimize**. The tool grounds each part and arranges its rectangular footprint on the plate. It tries several packing orders and optional 90° rotations around Z. It preserves scale and your selected tilt. This is a packing heuristic, not a guarantee of the best possible arrangement or print orientation.
 4. Review the side view, section callouts, layer preview, warnings, and time comparison before export.
 
-Use closed, consistently oriented meshes. The app checks connectivity and contours; it does not repair meshes, generate supports, hollow parts, or merge intersecting solids. Repair problematic geometry in your modeling software before importing it again.
+Import automatically removes exact duplicate and zero-area facets and attempts conservative stitching of uniquely matching seams no wider than 1 µm. The part card and geometry diagnostics report any cleanup. The slicer connects intersections through shared mesh edges, preserving very short valid segments instead of misreporting them as open contours. Missing faces, ambiguous connections, overlapping solids, and inconsistent winding still require editing in your mesh software; cleanup does not invent surfaces.
+
+A progress panel stays visible while reading files, checking meshes, planning, slicing, and verifying the SLC. Reading shows actual bytes; processing shows progress for the current stage, or an animated bar when no measured total is available. Cancel stops the operation without replacing your previous geometry.
+
+The app does not generate supports, hollow parts, or merge intersecting solids. Each imported STL is packed independently: separate part and support STLs are not automatically recognized as an aligned assembly. Separate part/support SLC output from another slicer does not itself explain an open-contour error here.
 
 ## Set the layer schedule
 
@@ -33,7 +37,7 @@ The model assumes uniform exposure and fixed irradiance and cycle overhead. It d
 
 SLC export writes **minimum-Z contour records** with a sampling table. Each mask is sampled near the middle of its physical layer interval. Successive record heights alone are insufficient to reconstruct every layer: the internal printer must honor the SLC sampling table and terminating height. The exporter supports at most **255 consecutive thickness runs**; simplify alternating sections if that limit is exceeded.
 
-Download the companion recipe for the schedule, resin inputs, timing assumptions, and placement information. SLC itself does not carry the exposure recipe. A recipe is not a geometry archive: reload the STL files and verify units, orientation, and placement when rebuilding a job. Verify representative constant and variable-thickness files in your internal reader before production use.
+Download the companion recipe for the schedule, resin inputs, timing assumptions, placement information, and reported cleanup/recovery. A singular sampling plane may move by a tiny recorded amount while physical layer heights remain unchanged. SLC itself does not carry the exposure recipe. A recipe is not a geometry archive: reload the STL files and verify units, orientation, and placement when rebuilding a job. Verify representative constant and variable-thickness files in your internal reader before production use.
 
 Limits include 32 parts, 200 MB per imported batch, 20,000 layers, and 3 million exported contour vertices. There is no hard triangle-count cap; browser memory and processing time still constrain complex files.
 

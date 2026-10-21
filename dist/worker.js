@@ -1,14 +1,14 @@
 /** Browser-local job worker. Cancel a job by terminating its worker instance. */
-import { ENGINE_LIMITS, parseSTL, analyzeMesh, computeBounds, createDemoMesh, planLayers, sliceBuild, sliceAt } from './engine.js';
+import { ENGINE_LIMITS, parseSTL, analyzeMesh, repairMesh, computeBounds, createDemoMesh, planLayers, sliceBuild, sliceAt } from './engine.js';
 import { packBuild, validateLayout } from './layout.js';
 import { encodeSLC, decodeSLC, samplingTableForLayers } from './slc.js';
 
 const MAX_PARTS = 32;
-const fail = (message, code = 'INVALID_JOB') => { const error = new Error(message); error.code = code; throw error; };
+const fail = (message, code = 'INVALID_JOB', details = {}) => { const error = new Error(message); error.code = code; error.details = details; throw error; };
 const safeName = (value, fallback) => String(value ?? fallback).replace(/[\x00-\x1f]/g, '').slice(0, 180) || fallback;
 function publicMesh(mesh) {
-  const { id, name, positions, triangleCount, bounds, format, unitScale, analysis } = mesh;
-  return { id, name, positions, triangleCount, bounds, format, unitScale, analysis };
+  const { id, name, positions, triangleCount, bounds, format, unitScale, analysis, repair } = mesh;
+  return { id, name, positions, triangleCount, bounds, format, unitScale, analysis, repair };
 }
 function cleanMeshes(input) {
   if (!Array.isArray(input) || !input.length || input.length > MAX_PARTS) fail(`Import between 1 and ${MAX_PARTS} parts.`, 'PART_LIMIT');
@@ -20,17 +20,21 @@ function cleanMeshes(input) {
     const id = safeName(mesh.id, `part-${i + 1}`);
     if (ids.has(id)) fail('Every build part must have a unique id.'); ids.add(id);
     // Recompute geometry-derived fields; inbound caches can be stale after edits.
-    return { id, name: safeName(mesh.name, `Part ${i + 1}.stl`), positions, triangleCount: positions.length / 9, bounds: computeBounds(positions), format: safeName(mesh.format, 'mesh'), unitScale: Number.isFinite(mesh.unitScale) ? mesh.unitScale : 1 };
+    return { id, name: safeName(mesh.name, `Part ${i + 1}.stl`), positions, triangleCount: positions.length / 9, bounds: computeBounds(positions), format: safeName(mesh.format, 'mesh'), unitScale: Number.isFinite(mesh.unitScale) ? mesh.unitScale : 1, repair: mesh.repair };
   });
 }
-function diagnosticsFor(meshes) {
-  return meshes.map(mesh => ({ id: mesh.id, name: mesh.name, ...analyzeMesh(mesh) }));
+function meshProgress(mesh, index, meshes, progress) {
+  return value => progress({ unit: 'triangles', ...value, fileName: mesh.name, fileIndex: index + 1, fileCount: meshes.length });
 }
-function assertPrintable(meshes) {
-  for (const mesh of meshes) {
-    const a = analyzeMesh(mesh);
-    if (!a.watertight) fail(`${mesh.name}: ${a.boundaryEdges} open edges and ${a.nonManifoldEdges} non-manifold edges. Repair the STL before planning/export.`, 'INVALID_MESH');
-    if (!a.consistentWinding) fail(`${mesh.name}: inconsistent triangle winding. Repair the STL before planning/export.`, 'INVALID_WINDING');
+function diagnosticsFor(meshes, progress = () => {}) {
+  return meshes.map((mesh, i) => ({ id: mesh.id, name: mesh.name, ...analyzeMesh(mesh, meshProgress(mesh, i, meshes, progress)), repair: mesh.repair }));
+}
+function assertPrintable(meshes, progress = () => {}) {
+  for (const [i, mesh] of meshes.entries()) {
+    const a = analyzeMesh(mesh, meshProgress(mesh, i, meshes, progress));
+    const details = { fileName: mesh.name, meshId: mesh.id, boundaryEdges: a.boundaryEdges, nonManifoldEdges: a.nonManifoldEdges, inconsistentEdges: a.inconsistentEdges };
+    if (!a.watertight) fail(`${mesh.name}: ${a.boundaryEdges} open edges and ${a.nonManifoldEdges} non-manifold edges remain after automatic cleanup. These require mesh repair; no missing surfaces were invented.`, 'INVALID_MESH', details);
+    if (!a.consistentWinding) fail(`${mesh.name}: inconsistent triangle winding remains. Reorient the affected surfaces in your mesh editor.`, 'INVALID_WINDING', details);
   }
 }
 function buildBounds(meshes) {
@@ -70,7 +74,7 @@ function verifyDecoded(decoded, sliced) {
 /** Exported for integration tests; emit(message, transferables) matches postMessage. */
 export function handleWorkerRequest(request, emit) {
   const id = request?.id;
-  const progress = value => emit({ id, type: 'progress', stage: value.stage, current: value.current, total: value.total, percent: Math.min(100, Math.max(0, value.percent)) });
+  const progress = value => emit({ id, type: 'progress', ...value, percent: Number.isFinite(value.percent) ? Math.min(100, Math.max(0, value.percent)) : null });
   try {
     if (!request || typeof request.type !== 'string') fail('Invalid worker request.');
     if (request.type === 'parse') {
@@ -80,24 +84,26 @@ export function handleWorkerRequest(request, emit) {
         if (!(file.buffer instanceof ArrayBuffer)) fail(`File ${i + 1} has no readable buffer.`, 'INVALID_STL');
         totalBytes += file.buffer.byteLength;
         if (totalBytes > ENGINE_LIMITS.maxFileBytes) fail('The combined import exceeds 200 MB. Load a smaller build.', 'FILE_TOO_LARGE');
-        progress({ stage: 'parsing', current: i, total: request.files.length, percent: i / request.files.length * 100 });
-        const mesh = parseSTL(file.buffer, safeName(file.name, `Part ${i + 1}.stl`), { unitScale: file.unitScale ?? 1 });
+        const fileName = safeName(file.name, `Part ${i + 1}.stl`);
+        const onProgress = value => progress({ unit: 'triangles', ...value, fileName, fileIndex: i + 1, fileCount: request.files.length });
+        const mesh = parseSTL(file.buffer, fileName, { unitScale: file.unitScale ?? 1, onProgress });
         mesh.id = safeName(file.id, `part-${i + 1}`);
-        return mesh;
+        const repaired = repairMesh(mesh, {}, onProgress);
+        repaired.mesh.repair = repaired.report;
+        return repaired.mesh;
       });
-      const meshes = cleanMeshes(parsed), diagnostics = diagnosticsFor(meshes);
-      progress({ stage: 'parsing', current: meshes.length, total: meshes.length, percent: 100 });
+      const meshes = parsed, diagnostics = diagnosticsFor(meshes, progress);
       emit({ id, type: 'parsed', meshes: meshes.map(publicMesh), diagnostics }); return;
     }
     if (request.type === 'demo') {
       const demo = createDemoMesh(); demo.id = 'demo-tower';
-      const meshes = [demo], diagnostics = diagnosticsFor(meshes);
+      const meshes = [demo], diagnostics = diagnosticsFor(meshes, progress);
       emit({ id, type: 'parsed', meshes: meshes.map(publicMesh), diagnostics }); return;
     }
     const meshes = cleanMeshes(request.meshes);
     if (request.type === 'plan') {
       const options = request.options ?? {}, bed = options.bed ?? { width: 760, depth: 660, gap: 5, margin: 5 };
-      assertPrintable(meshes);
+      assertPrintable(meshes, progress);
       progress({ stage: 'layout', current: 0, total: 1, percent: 0 });
       let placed = meshes, placements = [], layout;
       if (request.pack !== false) {
@@ -109,7 +115,7 @@ export function handleWorkerRequest(request, emit) {
         layout = { bounds: result.bounds, utilization: result.utilization, warnings: result.warnings ?? [], bed };
         placements = meshes.map(mesh => ({ id: mesh.id, name: mesh.name, x: mesh.bounds.min[0], y: mesh.bounds.min[1], width: mesh.bounds.size[0], depth: mesh.bounds.size[1], rotationZ: 0 }));
       }
-      assertPrintable(placed);
+      assertPrintable(placed, progress);
       progress({ stage: 'layout', current: 1, total: 1, percent: 100 });
       const plan = planLayers(placed, options, progress);
       try { plan.slcRunCount = samplingTableForLayers(plan.layers).length; plan.exportWarning = null; plan.exportable = true; }
@@ -120,7 +126,8 @@ export function handleWorkerRequest(request, emit) {
         plan.warnings = [...(plan.warnings ?? []), error.message];
       }
       progress({ stage: 'planning', current: plan.heightUm, total: plan.heightUm, percent: 100 });
-      emit({ id, type: 'planned', meshes: placed.map(publicMesh), placements, layout, plan }); return;
+      const diagnostics = diagnosticsFor(placed);
+      emit({ id, type: 'planned', meshes: placed.map(publicMesh), diagnostics, placements, layout, plan }); return;
     }
     if (request.type === 'slice') {
       if (!Number.isFinite(request.zMm)) fail('Preview height must be finite.', 'INVALID_Z');
@@ -128,8 +135,8 @@ export function handleWorkerRequest(request, emit) {
       emit({ id, type: 'slice', section }); return;
     }
     if (request.type === 'export') {
-      assertPrintable(meshes);
       const plan = checkedPlan(request.plan, meshes);
+      assertPrintable(meshes, progress);
       const sliced = sliceBuild(meshes, plan, progress);
       const bounds = buildBounds(meshes);
       progress({ stage: 'encoding', current: 0, total: 1, percent: 0 });
@@ -139,11 +146,11 @@ export function handleWorkerRequest(request, emit) {
       const decoded = decodeSLC(bytes); verifyDecoded(decoded, sliced);
       progress({ stage: 'verifying', current: 1, total: 1, percent: 100 });
       const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-      emit({ id, type: 'exported', buffer, layerCount: sliced.layers.length, byteLength: buffer.byteLength }, [buffer]); return;
+      emit({ id, type: 'exported', buffer, layerCount: sliced.layers.length, byteLength: buffer.byteLength, warnings: sliced.warnings || [], recovery: { recoveredPlanes: sliced.recoveredPlanes || 0, maxPlaneShiftMm: sliced.maxPlaneShiftMm || 0 } }, [buffer]); return;
     }
     fail(`Unknown worker task: ${request.type}.`, 'UNKNOWN_JOB');
   } catch (error) {
-    emit({ id, type: 'error', message: error?.message || 'The local geometry job failed.', code: error?.code || 'PROCESSING_ERROR' });
+    emit({ id, type: 'error', message: error?.message || 'The local geometry job failed.', code: error?.code || 'PROCESSING_ERROR', details: error?.details || {} });
   }
 }
 

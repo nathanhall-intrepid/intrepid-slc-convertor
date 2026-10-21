@@ -1,7 +1,8 @@
 /** Browser-local STL inspection, planar slicing and adaptive layer planning.
  * Coordinates are millimetres. Layer zMm is the END of its interval; masks are
  * sampled at interval mid-height. SLC serialization owns its minimum-Z records.
- * No automatic mesh repair or semantic lattice/support classification is claimed.
+ * Repair is limited to reported cleanup and precision-scale boundary seams;
+ * semantic lattice/support classification and general hole filling are not claimed.
  */
 export const ENGINE_LIMITS = Object.freeze({maxLayers:20000,maxContourVertices:3000000,maxFileBytes:200*1024*1024});
 
@@ -19,7 +20,8 @@ export function computeBounds(positions) {
   return {min,max,size:max.map((v,k)=>v-min[k]),center:max.map((v,k)=>(v+min[k])/2)};
 }
 
-export function parseSTL(input,name='part.stl',{unitScale=1}={}) {
+export function parseSTL(input,name='part.stl',{unitScale=1,onProgress=()=>{}}={}) {
+  onProgress({stage:'parsing',current:0,total:1,percent:0});
   if(!finite(unitScale)||unitScale<=0) fail('Choose a positive STL unit scale.','INVALID_UNITS');
   const buffer=input instanceof ArrayBuffer?input:input.buffer.slice(input.byteOffset,input.byteOffset+input.byteLength);
   if(buffer.byteLength>ENGINE_LIMITS.maxFileBytes) fail('STL exceeds the 200 MB browser-processing limit.','FILE_TOO_LARGE');
@@ -30,7 +32,7 @@ export function parseSTL(input,name='part.stl',{unitScale=1}={}) {
   const binary=count>0&&expected===buffer.byteLength;
   if(binary){
     positions=new Float64Array(count*9);
-    for(let i=0;i<count;i++){const start=84+i*50+12;for(let k=0;k<9;k++)positions[i*9+k]=view.getFloat32(start+k*4,true)*unitScale;}
+    for(let i=0;i<count;i++){const start=84+i*50+12;for(let k=0;k<9;k++)positions[i*9+k]=view.getFloat32(start+k*4,true)*unitScale;if(i%4096===0)onProgress({stage:'parsing',current:i,total:count,percent:i/count*100});}
     format='binary';
   } else {
     const text=new TextDecoder().decode(buffer);
@@ -40,7 +42,7 @@ export function parseSTL(input,name='part.stl',{unitScale=1}={}) {
     positions=new Float64Array(facets.length*9);let offset=0;
     const number='[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?';
     const rx=new RegExp('\\bvertex\\s+('+number+')\\s+('+number+')\\s+('+number+')','gi');
-    for(const facet of facets){const vertices=[...facet.matchAll(rx)];if(vertices.length!==3||!/outer\s+loop/i.test(facet)||!/endloop/i.test(facet))fail('Each STL facet must contain one three-vertex loop.','INVALID_STL');for(const v of vertices)for(let k=1;k<=3;k++)positions[offset++]=Number(v[k])*unitScale;}
+    for(const facet of facets){const vertices=[...facet.matchAll(rx)];if(vertices.length!==3||!/outer\s+loop/i.test(facet)||!/endloop/i.test(facet))fail('Each STL facet must contain one three-vertex loop.','INVALID_STL');for(const v of vertices)for(let k=1;k<=3;k++)positions[offset++]=Number(v[k])*unitScale;const count=offset/9;if(count%4096===0)onProgress({stage:'parsing',current:count,total:facets.length,percent:count/facets.length*100});}
     const body=text.replace(/^\s*solid[^\r\n]*(?:\r?\n)?/i,'').replace(/endsolid[^\r\n]*\s*$/i,'');
     const totalVertices=(body.match(/\bvertex\b/gi)||[]).length;
     if(totalVertices!==facets.length*3||!/endsolid\b/i.test(text)) fail('ASCII STL contains incomplete or unsupported facet data.','INVALID_STL');
@@ -48,7 +50,21 @@ export function parseSTL(input,name='part.stl',{unitScale=1}={}) {
   }
   const bounds=computeBounds(positions);
   if(Math.max(...bounds.size)<=0) fail('STL has no physical extent.','EMPTY_MESH');
+  onProgress({stage:'parsing',current:positions.length/9,total:positions.length/9,percent:100});
   return {name,positions,triangleCount:positions.length/9,bounds,format,unitScale};
+}
+
+// Exact coordinate identity is topology, not a distance-based guess. In
+// particular, adjacent parts and opposite sides of a thin wall must stay apart.
+function indexed(mesh,onProgress=()=>{}){
+  if(mesh._topology)return mesh._topology;
+  const p=mesh.positions,ids=new Uint32Array(p.length/3),offsets=[],vertices=new Map();
+  for(let j=0;j<p.length;j+=3){const key=`${p[j]},${p[j+1]},${p[j+2]}`;let id=vertices.get(key);if(id===undefined){id=offsets.length;vertices.set(key,id);offsets.push(j);}ids[j/3]=id;if(j%36864===0)onProgress(j/p.length);}
+  return mesh._topology={ids,offsets,vertexCount:offsets.length};
+}
+function numericTolerance(meshes){
+  let scale=1;for(const mesh of meshes)for(const value of [...mesh.bounds.min,...mesh.bounds.max])scale=Math.max(scale,Math.abs(value));
+  return Math.max(1e-11,scale*Number.EPSILON*32);
 }
 
 function prepared(mesh){
@@ -59,17 +75,19 @@ function prepared(mesh){
   return mesh._prepared={minZ,maxZ,normalZ,normalX,normalY};
 }
 
-export function analyzeMesh(mesh) {
-  if(mesh.analysis)return mesh.analysis;
-  const p=mesh.positions,b=mesh.bounds||computeBounds(p),diag=Math.hypot(...b.size),tolerance=Math.max(1e-6,diag*1e-7);
-  const vertexMap=new Map(),edges=new Map();let vertexCount=0,degenerateTriangles=0,volume=0,surfaceArea=0;
+export function analyzeMesh(mesh,onProgress=()=>{}) {
+  const total=mesh.positions.length/9;
+  if(mesh.analysis){onProgress({stage:'analyzing',percent:100,message:'Mesh topology already checked'});return mesh.analysis;}
+  onProgress({stage:'analyzing',percent:0,message:'Indexing exact shared vertices'});
+  const p=mesh.positions,b=mesh.bounds||computeBounds(p),topology=indexed(mesh,f=>onProgress({stage:'analyzing',percent:f*35,message:'Indexing exact shared vertices'}));
+  const edges=new Map();let degenerateTriangles=0,volume=0,surfaceArea=0;
   for(let i=0;i<p.length;i+=9){
-    const ids=[];
-    for(let v=0;v<3;v++){const j=i+v*3,key=[0,1,2].map(k=>Math.round(p[j+k]/tolerance)).join(',');let id=vertexMap.get(key);if(id===undefined){id=vertexCount++;vertexMap.set(key,id);}ids.push(id);}
+    const ids=[topology.ids[i/3],topology.ids[i/3+1],topology.ids[i/3+2]];
     const nx=cross(p[i+3]-p[i],p[i+4]-p[i+1],p[i+5]-p[i+2],p[i+6]-p[i],p[i+7]-p[i+1],p[i+8]-p[i+2]);const area=Math.hypot(...nx)/2;
-    if(new Set(ids).size<3||area<tolerance*tolerance){degenerateTriangles++;continue;}
+    if(new Set(ids).size<3||area===0){degenerateTriangles++;continue;}
     surfaceArea+=area;const bc=cross(p[i+3],p[i+4],p[i+5],p[i+6],p[i+7],p[i+8]);volume+=(p[i]*bc[0]+p[i+1]*bc[1]+p[i+2]*bc[2])/6;
     for(let k=0;k<3;k++){const a=ids[k],c=ids[(k+1)%3],key=a<c?`${a}:${c}`:`${c}:${a}`;let edge=edges.get(key);if(!edge){edge={count:0,balance:0};edges.set(key,edge);}edge.count++;edge.balance+=a<c?1:-1;}
+    if(i%36864===0)onProgress({stage:'analyzing',percent:35+i/p.length*65,message:'Checking mesh edges and winding'});
   }
   let boundaryEdges=0,nonManifoldEdges=0,inconsistentEdges=0;
   for(const e of edges.values()){if(e.count===1)boundaryEdges++;if(e.count>2)nonManifoldEdges++;if(e.count===2&&e.balance!==0)inconsistentEdges++;}
@@ -78,7 +96,107 @@ export function analyzeMesh(mesh) {
   if(degenerateTriangles)warnings.push(`${degenerateTriangles} zero-area triangles ignored during slicing.`);
   if(inconsistentEdges)warnings.push(`${inconsistentEdges} edges have inconsistent facet winding. Repair orientation before SLC export.`);
   if(!watertight)warnings.push('Mesh has open or non-manifold edges. Repair it before SLC export.');
-  return mesh.analysis={triangleCount:p.length/9,vertexCount,edgeCount:edges.size,boundaryEdges,nonManifoldEdges,inconsistentEdges,degenerateTriangles,watertight,consistentWinding:inconsistentEdges===0,signedVolumeMm3:volume,volumeMm3:Math.abs(volume),surfaceAreaMm2:surfaceArea,weldToleranceMm:tolerance,bounds:b,warnings};
+  onProgress({stage:'analyzing',percent:100,message:'Mesh topology checked'});
+  return mesh.analysis={triangleCount:p.length/9,vertexCount:topology.vertexCount,edgeCount:edges.size,boundaryEdges,nonManifoldEdges,inconsistentEdges,degenerateTriangles,watertight,consistentWinding:inconsistentEdges===0,signedVolumeMm3:volume,volumeMm3:Math.abs(volume),surfaceAreaMm2:surfaceArea,weldToleranceMm:0,bounds:b,warnings};
+}
+
+/** Conservative mesh cleanup. No faces are invented. A seam may be stitched
+ * only when two complete, distinct simple boundary loops match uniquely with
+ * opposite edge orientation, already belong to one connected surface, and all
+ * vertex movements are within maxGapMm (at most 1 micrometre). */
+export function repairMesh(mesh,options={},onProgress=()=>{}){
+  const emit=(percent,phase)=>onProgress({stage:'repairing',phase,message:phase,unit:'',percent});
+  emit(0,'Checking mesh topology before cleanup');
+  const before=analyzeMesh(mesh,p=>emit(p.percent*.15,p.message)),source=mesh.positions,total=source.length/9,topology=indexed(mesh),warnings=[];
+  const tolerance=options.maxGapMm??Math.min(.001,Math.max(1e-6,Math.hypot(...mesh.bounds.size)*1e-6));
+  if(!finite(tolerance)||tolerance<0||tolerance>.001)fail('Mesh seam tolerance must be between 0 and 0.001 mm.','INVALID_REPAIR_TOLERANCE');
+  const report={changed:false,weldedVertices:0,removedDegenerateTriangles:0,removedDuplicateTriangles:0,maxVertexShiftMm:0,seamToleranceMm:tolerance,boundaryEdgesBefore:before.boundaryEdges,boundaryEdgesAfter:before.boundaryEdges,nonManifoldEdgesAfter:before.nonManifoldEdges,inconsistentEdgesAfter:before.inconsistentEdges,watertight:before.watertight,warnings};
+  emit(15,'Removing exact duplicate and zero-area facets');
+  const keep=[],seen=new Map();
+  for(let face=0;face<total;face++){
+    const i=face*9,a=topology.ids[face*3],b=topology.ids[face*3+1],c=topology.ids[face*3+2];
+    const n=cross(source[i+3]-source[i],source[i+4]-source[i+1],source[i+5]-source[i+2],source[i+6]-source[i],source[i+7]-source[i+1],source[i+8]-source[i+2]);
+    if(a===b||b===c||c===a||Math.hypot(...n)===0){report.removedDegenerateTriangles++;continue;}
+    const key=[a,b,c].sort((x,y)=>x-y).join(':'),sign=(a-b)*(b-c)*(c-a)>0?1:2,mask=seen.get(key)||0;
+    if(mask&sign){report.removedDuplicateTriangles++;continue;}seen.set(key,mask|sign);keep.push(face);
+    if(face%4096===0)emit(15+face/total*15,'Removing exact duplicate and zero-area facets');
+  }
+  if(!keep.length)fail('Mesh cleanup found no nonzero-area facets.','EMPTY_MESH');
+  let p=source;
+  if(keep.length!==total){p=new Float64Array(keep.length*9);for(let i=0;i<keep.length;i++)p.set(source.subarray(keep[i]*9,keep[i]*9+9),i*9);}
+  seen.clear();keep.length=0;
+  let clean={...mesh,positions:p,triangleCount:p.length/9,bounds:computeBounds(p),analysis:p===source?before:undefined,_prepared:p===source?mesh._prepared:undefined,_topology:p===source?topology:undefined};
+  const cleanBefore=analyzeMesh(clean,p=>emit(30+p.percent*.1,p.message)),ti=indexed(clean),count=p.length/9;
+  // Closed surfaces cannot contain an open seam and are never proximity-welded.
+  if(tolerance>0&&cleanBefore.boundaryEdges){
+    const parents=Uint32Array.from({length:count},(_,i)=>i);
+    const root=(a)=>{while(parents[a]!==a){parents[a]=parents[parents[a]];a=parents[a];}return a;};
+    const edges=new Map();
+    for(let face=0;face<count;face++){
+      for(let k=0;k<3;k++){
+        const a=ti.ids[face*3+k],b=ti.ids[face*3+(k+1)%3],key=a<b?`${a}:${b}`:`${b}:${a}`,old=edges.get(key);
+        if(old){old.count++;parents[root(face)]=root(old.face);}else edges.set(key,{a,b,face,count:1});
+      }
+      if(face%4096===0)emit(40+face/count*25,'Finding existing surface components and boundary loops');
+    }
+    const boundary=[...edges.values()].filter(e=>e.count===1),atVertex=new Map(),loopOf=new Int32Array(boundary.length).fill(-1),loops=[];
+    for(let i=0;i<boundary.length;i++)for(const v of [boundary[i].a,boundary[i].b]){const list=atVertex.get(v)||[];list.push(i);atVertex.set(v,list);}
+    const visited=new Uint8Array(boundary.length);
+    for(let seed=0;seed<boundary.length;seed++){
+      if(visited[seed])continue;
+      const stack=[seed],component=[];let simple=true;
+      while(stack.length){const id=stack.pop();if(visited[id])continue;visited[id]=1;component.push(id);for(const v of [boundary[id].a,boundary[id].b]){const incident=atVertex.get(v);if(incident.length!==2)simple=false;for(const next of incident)if(!visited[next])stack.push(next);}}
+      if(simple&&component.length>=3){const id=loops.length;for(const e of component)loopOf[e]=id;loops.push(component);}
+    }
+    const point=v=>{const i=ti.offsets[v];return [p[i],p[i+1],p[i+2]];};
+    const distance=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1],a[2]-b[2]);
+    const candidates=Array.from({length:boundary.length},()=>[]),cells=new Map();
+    for(let i=0;i<boundary.length;i++){
+      if(loopOf[i]<0)continue;const edge=boundary[i],a=point(edge.a),b=point(edge.b);if(distance(a,b)<=tolerance*20)continue;
+      const cell=a.map((v,k)=>Math.floor((v+b[k])*.5/tolerance));
+      for(let x=-1;x<=1;x++)for(let y=-1;y<=1;y++)for(let z=-1;z<=1;z++){
+        for(const j of cells.get(`${cell[0]+x},${cell[1]+y},${cell[2]+z}`)||[]){
+          const other=boundary[j];
+          if(loopOf[j]===loopOf[i]||root(edge.face)!==root(other.face)||edge.a===other.a||edge.a===other.b||edge.b===other.a||edge.b===other.b)continue;
+          if(distance(a,point(other.b))<=tolerance&&distance(b,point(other.a))<=tolerance){candidates[i].push(j);candidates[j].push(i);}
+        }
+      }
+      const key=cell.join(','),bucket=cells.get(key)||[];bucket.push(i);cells.set(key,bucket);
+      if(i%4096===0)emit(65+i/boundary.length*20,'Matching complete precision-scale seams');
+    }
+    const pairLoops=new Map();
+    for(let li=0;li<loops.length;li++){
+      let partner=-1,valid=true;
+      for(const edge of loops[li]){const matches=candidates[edge];if(matches.length!==1||candidates[matches[0]].length!==1){valid=false;break;}const target=loopOf[matches[0]];if(partner!==-1&&target!==partner){valid=false;break;}partner=target;}
+      if(valid&&partner>=0&&loops[partner].length===loops[li].length)pairLoops.set(li,partner);
+    }
+    const replacement=new Map();
+    for(const [li,partner] of pairLoops){
+      if(li>=partner||pairLoops.get(partner)!==li)continue;
+      const proposed=new Map();let valid=true;
+      for(const edgeId of loops[li]){
+        const edge=boundary[edgeId],other=boundary[candidates[edgeId][0]];
+        for(const [a,b] of [[edge.a,other.b],[edge.b,other.a]]){const low=Math.min(a,b),high=Math.max(a,b);if(proposed.has(high)&&proposed.get(high)!==low)valid=false;proposed.set(high,low);}
+      }
+      if(valid)for(const [a,b] of proposed)replacement.set(a,b);
+    }
+    if(replacement.size){
+      const welded=new Float64Array(p);
+      for(let i=0;i<ti.ids.length;i++){const v=ti.ids[i],target=replacement.get(v);if(target===undefined)continue;const offset=ti.offsets[target];for(let k=0;k<3;k++)welded[i*3+k]=p[offset+k];}
+      const candidate={...clean,positions:welded,bounds:computeBounds(welded),analysis:undefined,_prepared:undefined,_topology:undefined},after=analyzeMesh(candidate,p=>emit(85+p.percent*.1,p.message));
+      if(after.degenerateTriangles||after.boundaryEdges>=cleanBefore.boundaryEdges||after.nonManifoldEdges>cleanBefore.nonManifoldEdges||after.inconsistentEdges>cleanBefore.inconsistentEdges){warnings.push('A candidate seam would change surface topology ambiguously; it was left unchanged.');}
+      else{clean=candidate;report.weldedVertices=replacement.size;for(const [a,b] of replacement)report.maxVertexShiftMm=Math.max(report.maxVertexShiftMm,distance(point(a),point(b)));}
+    }
+  }
+  emit(95,'Validating repaired topology');
+  const after=analyzeMesh(clean,p=>emit(95+p.percent*.05,p.message));
+  report.changed=Boolean(report.weldedVertices||report.removedDegenerateTriangles||report.removedDuplicateTriangles);
+  report.boundaryEdgesAfter=after.boundaryEdges;report.nonManifoldEdgesAfter=after.nonManifoldEdges;report.inconsistentEdgesAfter=after.inconsistentEdges;report.watertight=after.watertight;
+  if(after.boundaryEdges)warnings.push(`${after.boundaryEdges} open boundary edges remain. They do not form a unique precision-scale seam; no holes were filled.`);
+  if(after.nonManifoldEdges)warnings.push(`${after.nonManifoldEdges} non-manifold edges remain and require mesh editing.`);
+  if(after.inconsistentEdges)warnings.push(`${after.inconsistentEdges} inconsistent winding edges remain and require orientation repair.`);
+  emit(100,'Mesh cleanup complete');
+  return {mesh:clean,report};
 }
 
 export function transformMesh(mesh,{rotation=[0,0,0],translation=[0,0,0],ground=false}={}) {
@@ -87,10 +205,10 @@ export function transformMesh(mesh,{rotation=[0,0,0],translation=[0,0,0],ground=
   for(let i=0;i<input.length;i+=3){let x=input[i],y=input[i+1],z=input[i+2];[y,z]=[y*c[0]-z*s[0],y*s[0]+z*c[0]];[x,z]=[x*c[1]+z*s[1],-x*s[1]+z*c[1]];[x,y]=[x*c[2]-y*s[2],x*s[2]+y*c[2]];p[i]=x+translation[0];p[i+1]=y+translation[1];p[i+2]=z+translation[2];}
   let bounds=computeBounds(p);
   if(ground){for(let i=2;i<p.length;i+=3)p[i]-=bounds.min[2];bounds=computeBounds(p);}
-  return {...mesh,positions:p,bounds,analysis:undefined,_prepared:undefined,transform:{rotation:[...rotation],translation:[...translation],ground}};
+  return {...mesh,positions:p,bounds,analysis:undefined,_prepared:undefined,_topology:undefined,transform:{rotation:[...rotation],translation:[...translation],ground}};
 }
 
-export function signedArea(ring){let a=0;for(let i=0,j=ring.length-1;i<ring.length;j=i++)a+=ring[j][0]*ring[i][1]-ring[i][0]*ring[j][1];return a/2;}
+export function signedArea(ring){let a=0;const [x,y]=ring[0]||[0,0];for(let i=0,j=ring.length-1;i<ring.length;j=i++)a+=(ring[j][0]-x)*(ring[i][1]-y)-(ring[i][0]-x)*(ring[j][1]-y);return a/2;}
 export function pointInRing(point,ring){let inside=false;for(let i=0,j=ring.length-1;i<ring.length;j=i++){const a=ring[i],b=ring[j];if((a[1]>point[1])!==(b[1]>point[1])&&point[0]<(b[0]-a[0])*(point[1]-a[1])/(b[1]-a[1])+a[0])inside=!inside;}return inside;}
 function ringBounds(r){const min=[Infinity,Infinity],max=[-Infinity,-Infinity];for(const p of r)for(let k=0;k<2;k++){min[k]=Math.min(min[k],p[k]);max[k]=Math.max(max[k],p[k]);}return {min,max};}
 function simplifyRing(points,tolerance){
@@ -120,28 +238,38 @@ function validateRingIntersections(rings,tolerance){
   }
 }
 
-export function sliceAt(meshes,zMm,{validate=true}={}) {
+function sliceExact(meshes,zMm,{validate=true}={}) {
   if(!Array.isArray(meshes))meshes=[meshes];
   if(!finite(zMm))fail('Slice height must be finite.','INVALID_Z');
-  const diagonal=Math.max(1,...meshes.map(m=>Math.hypot(...m.bounds.size))),tolerance=Math.max(1e-6,diagonal*1e-7);
-  const nodes=[],buckets=new Map(),edges=[];
-  function node(x,y){const gx=Math.floor(x/tolerance),gy=Math.floor(y/tolerance);for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++){const ids=buckets.get(`${gx+dx},${gy+dy}`)||[];for(const i of ids)if(Math.hypot(nodes[i].p[0]-x,nodes[i].p[1]-y)<=tolerance)return i;}const id=nodes.length,key=`${gx},${gy}`;nodes.push({p:[x,y],edges:[]});const arr=buckets.get(key)||[];arr.push(id);buckets.set(key,arr);return id;}
-  for(const mesh of meshes){const p=mesh.positions,prep=prepared(mesh);for(let ti=0;ti<prep.minZ.length;ti++){
+  const tolerance=numericTolerance(meshes),nodes=[],edges=[];
+  for(const mesh of meshes){const p=mesh.positions,prep=prepared(mesh),topology=indexed(mesh),nodeMap=new Map();
+    function intersection(a,b){
+      let va=topology.ids[a/3],vb=topology.ids[b/3];
+      // Shared edges are interpolated in one canonical direction so adjacent
+      // facets produce identical endpoints, even close to a vertex elevation.
+      if(va>vb){[va,vb]=[vb,va];[a,b]=[b,a];}
+      const za=p[a+2],zb=p[b+2],t=(zMm-za)/(zb-za),key=zMm===za?`v${va}`:zMm===zb?`v${vb}`:`e${va}:${vb}`;
+      let id=nodeMap.get(key);if(id!==undefined)return id;
+      id=nodes.length;nodeMap.set(key,id);nodes.push({p:[p[a]+t*(p[b]-p[a]),p[a+1]+t*(p[b+1]-p[a+1])],edges:[]});return id;
+    }
+    for(let ti=0;ti<prep.minZ.length;ti++){
     if(zMm<prep.minZ[ti]||zMm>=prep.maxZ[ti])continue;
     const j=ti*9,hits=[];
-    for(let e=0;e<3;e++){const a=j+e*3,b=j+((e+1)%3)*3,za=p[a+2],zb=p[b+2];if((za<=zMm&&zb>zMm)||(zb<=zMm&&za>zMm)){const t=(zMm-za)/(zb-za);hits.push([p[a]+t*(p[b]-p[a]),p[a+1]+t*(p[b+1]-p[a+1])]);}}
-    if(hits.length!==2||Math.hypot(hits[0][0]-hits[1][0],hits[0][1]-hits[1][1])<=tolerance)continue;
-    let a=node(...hits[0]),b=node(...hits[1]);if(a===b)continue;
-    const direction=(hits[1][0]-hits[0][0])*(-prep.normalY[ti])+(hits[1][1]-hits[0][1])*prep.normalX[ti];if(direction<0)[a,b]=[b,a];
+    for(let e=0;e<3;e++){const a=j+e*3,b=j+((e+1)%3)*3,za=p[a+2],zb=p[b+2];if((za<=zMm&&zb>zMm)||(zb<=zMm&&za>zMm))hits.push(intersection(a,b));}
+    if(hits.length!==2||hits[0]===hits[1])continue;
+    let [a,b]=hits;const first=nodes[a].p,last=nodes[b].p;
+    const direction=(last[0]-first[0])*(-prep.normalY[ti])+(last[1]-first[1])*prep.normalX[ti];if(direction<0)[a,b]=[b,a];
     const id=edges.length;edges.push({a,b,nz:prep.normalZ[ti],minZ:prep.minZ[ti],maxZ:prep.maxZ[ti],used:false});nodes[a].edges.push(id);nodes[b].edges.push(id);
   }}
-  for(const v of nodes)if(v.edges.length!==2)fail(v.edges.length<2?'Slice contains an open contour. Repair the mesh before export.':'Slice has ambiguous contour junctions. Parts may overlap or touch.','OPEN_CONTOUR',{zMm,degree:v.edges.length});
+  for(const v of nodes)if(v.edges.length&&v.edges.length!==2)fail(v.edges.length<2?'Slice contains an unresolved open contour. Run mesh cleanup and inspect remaining boundary edges.':'Slice has ambiguous contour junctions. Parts may overlap or touch.','OPEN_CONTOUR',{zMm,degree:v.edges.length,xMm:v.p[0],yMm:v.p[1]});
   const rings=[],maxNormals=[],inputSigns=[],enclosures=[];
   for(let seed=0;seed<edges.length;seed++){
     if(edges[seed].used)continue;let edgeId=seed,current=edges[seed].a,start=current,ring=[],maxNz=0,steps=0,directionBalance=0,enclosureMinZ=-Infinity,enclosureMaxZ=Infinity;
     do{const edge=edges[edgeId];if(edge.used)fail('Slice loop did not close consistently.','OPEN_CONTOUR',{zMm});edge.used=true;ring.push(nodes[current].p);maxNz=Math.max(maxNz,edge.nz);enclosureMinZ=Math.max(enclosureMinZ,edge.minZ);enclosureMaxZ=Math.min(enclosureMaxZ,edge.maxZ);directionBalance+=edge.a===current?1:-1;current=edge.a===current?edge.b:edge.a;edgeId=nodes[current].edges.find(id=>!edges[id].used);if(++steps>edges.length+1)fail('Slice loop exceeded its traversal bound.','OPEN_CONTOUR');}while(current!==start&&edgeId!==undefined);
     if(current!==start)fail('Slice contains an incomplete loop.','OPEN_CONTOUR',{zMm});
-    ring=simplifyRing(ring,tolerance*.25);if(ring.length>=3&&Math.abs(signedArea(ring))>tolerance*tolerance){rings.push(ring);maxNormals.push(maxNz);enclosures.push({ring,minZ:enclosureMinZ,maxZ:enclosureMaxZ,exactVertical:maxNz<1e-12});inputSigns.push(Math.abs(directionBalance)===steps?Math.sign(signedArea(ring))*Math.sign(directionBalance):0);}
+    ring=simplifyRing(ring,tolerance*.25);
+    if(ring.length<3||signedArea(ring)===0)fail('A slice contour collapses at this sampling plane. Inspect the mesh junction or use a nearby plane.','DEGENERATE_CONTOUR',{zMm});
+    rings.push(ring);maxNormals.push(maxNz);enclosures.push({ring,minZ:enclosureMinZ,maxZ:enclosureMaxZ,exactVertical:maxNz<1e-12});inputSigns.push(Math.abs(directionBalance)===steps?Math.sign(signedArea(ring))*Math.sign(directionBalance):0);
   }
   if(validate)validateRingIntersections(rings,tolerance*.1);
   const rb=rings.map(ringBounds),depths=rings.map((r,i)=>rings.reduce((depth,q,j)=>depth+(i!==j&&rb[j].min[0]<=r[0][0]&&rb[j].max[0]>=r[0][0]&&rb[j].min[1]<=r[0][1]&&rb[j].max[1]>=r[0][1]&&pointInRing(r[0],q)?1:0),0));
@@ -150,6 +278,26 @@ export function sliceAt(meshes,zMm,{validate=true}={}) {
     if(validate&&inputSigns[i]!==desired)fail('Contour nesting conflicts with STL facet winding. Repair overlapping/nested solids or facet orientation before export.','INVALID_WINDING',{zMm,depth:depths[i]});
     if(Math.sign(signedArea(rings[i]))!==desired)rings[i].reverse();areaMm2+=signedArea(rings[i]);if(depths[i]===0)outerMaxNormalZ=Math.max(outerMaxNormalZ,maxNormals[i]);}
   return {zMm,rings,depths,outerRings:rings.filter((_,i)=>depths[i]===0),outerEnclosures:enclosures.filter((_,i)=>depths[i]===0),areaMm2,outerMaxNormalZ,vertexCount:rings.reduce((sum,r)=>sum+r.length,0),toleranceMm:tolerance};
+}
+
+/** One shared sampler for planning, preview and export. A singular plane may be
+ * offset only on an exactly closed mesh and only within a recorded numerical
+ * bound; missing faces and arbitrary gaps never qualify for this retry. */
+export function sliceAt(meshes,zMm,{validate=true,recover=true,zBounds}={}){
+  if(!Array.isArray(meshes))meshes=[meshes];
+  try{return {...sliceExact(meshes,zMm,{validate}),sampleZMm:zMm,recovery:{shiftedPlane:false,shiftMm:0}};}
+  catch(error){
+    if(!recover||!['OPEN_CONTOUR','DEGENERATE_CONTOUR'].includes(error.code))throw error;
+    const tolerance=numericTolerance(meshes);let nearVertex=false,nearestOther=Infinity;
+    for(const mesh of meshes)for(let i=2;i<mesh.positions.length;i+=3){const d=Math.abs(mesh.positions[i]-zMm);if(d<=tolerance*4)nearVertex=true;else nearestOther=Math.min(nearestOther,d);}
+    if(!nearVertex||meshes.some(mesh=>{const a=analyzeMesh(mesh);return !a.watertight||!a.consistentWinding;}))throw error;
+    const shift=Math.min(1e-5,Math.max(1e-9,tolerance*64),nearestOther/4),limits=zBounds||[Math.min(...meshes.map(m=>m.bounds.min[2])),Math.max(...meshes.map(m=>m.bounds.max[2]))];
+    for(const direction of [1,-1]){
+      const sampleZMm=zMm+shift*direction;if(!(sampleZMm>limits[0]&&sampleZMm<limits[1])||sampleZMm===zMm)continue;
+      try{return {...sliceExact(meshes,sampleZMm,{validate}),zMm,sampleZMm,recovery:{shiftedPlane:true,shiftMm:sampleZMm-zMm,reason:'singular vertex or edge plane'}};}catch(retry){if(!['OPEN_CONTOUR','DEGENERATE_CONTOUR'].includes(retry.code))throw retry;}
+    }
+    throw error;
+  }
 }
 
 function enclosureProfile(enclosures,meshes,tolerance,cache){
@@ -274,19 +422,16 @@ export function planLayers(meshes,options={},onProgress=()=>{}) {
 export function sliceBuild(meshes,plan,onProgress=()=>{}) {
   if(!Array.isArray(meshes))meshes=[meshes];
   for(const mesh of meshes){const check=analyzeMesh(mesh);if(!check.watertight)fail(`${mesh.name||'STL'} is not watertight: ${check.boundaryEdges} open and ${check.nonManifoldEdges} non-manifold edges. Repair it before export.`,'INVALID_MESH',check);if(check.inconsistentEdges)fail(`${mesh.name||'STL'} has inconsistent facet winding. Repair orientation before export.`,'INVALID_WINDING',check);}
-  const layers=[];let vertices=0;
+  const layers=[];let vertices=0,recoveredPlanes=0,maxPlaneShiftMm=0;
   for(let i=0;i<plan.layers.length;i++){
-    const layer=plan.layers[i],mid=(layer.zStartMm+layer.zMm)/2;let slice,sampleZMm=mid;
-    try{slice=sliceAt(meshes,mid);}catch(error){
-      if(error.code!=='OPEN_CONTOUR')throw error;
-      const eps=Math.min(layer.thicknessUm/1000/10,1e-5);sampleZMm=mid+eps;
-      slice=sliceAt(meshes,sampleZMm);
-    }
+    const layer=plan.layers[i],mid=(layer.zStartMm+layer.zMm)/2,slice=sliceAt(meshes,mid,{zBounds:[layer.zStartMm,layer.zMm]});
+    if(slice.recovery.shiftedPlane){recoveredPlanes++;maxPlaneShiftMm=Math.max(maxPlaneShiftMm,Math.abs(slice.recovery.shiftMm));}
     vertices+=slice.vertexCount;if(vertices>ENGINE_LIMITS.maxContourVertices)fail('Sliced contours exceed the 3-million-vertex export limit. Reduce build complexity.','EXPORT_TOO_LARGE');
-    layers.push({...layer,rings:slice.rings,areaMm2:slice.areaMm2,sampleZMm});
+    layers.push({...layer,rings:slice.rings,areaMm2:slice.areaMm2,sampleZMm:slice.sampleZMm,recovery:slice.recovery});
     if(i%10===0||i===plan.layers.length-1)onProgress({stage:'slicing',current:i+1,total:plan.layers.length,percent:(i+1)/plan.layers.length*100});
   }
-  return {...plan,layers,contourVertexCount:vertices};
+  const warnings=[...plan.warnings];if(recoveredPlanes)warnings.push(`${recoveredPlanes} singular sampling planes shifted by at most ${maxPlaneShiftMm.toExponential(2)} mm; layer endpoints are unchanged.`);
+  return {...plan,layers,warnings,contourVertexCount:vertices,recoveredPlanes,maxPlaneShiftMm};
 }
 
 /** Closed indexed primitive fixtures are also used for the built-in demo. */
