@@ -1,5 +1,5 @@
 /** Deterministic XY packing; it never changes tilt, scale, or part geometry. */
-import { computeBounds, transformMesh } from './engine.js';
+import { computeBounds, transformMesh } from './engine.js?v=20261021.2';
 
 export class LayoutError extends Error {
   constructor(message, code = 'LAYOUT_ERROR', details = {}) {

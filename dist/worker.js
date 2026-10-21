@@ -1,6 +1,6 @@
 /** Browser-local job worker. Cancel a job by terminating its worker instance. */
-import { ENGINE_LIMITS, parseSTL, analyzeMesh, repairMesh, computeBounds, createDemoMesh, planLayers, sliceBuild, sliceAt } from './engine.js';
-import { packBuild, validateLayout } from './layout.js';
+import { ENGINE_LIMITS, parseSTL, analyzeMesh, repairMesh, computeBounds, createDemoMesh, planLayers, sliceBuild, sliceAt } from './engine.js?v=20261021.2';
+import { packBuild, validateLayout } from './layout.js?v=20261021.2';
 import { encodeSLC, decodeSLC, samplingTableForLayers } from './slc.js';
 
 const MAX_PARTS = 32;
