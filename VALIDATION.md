@@ -1,6 +1,8 @@
 # Delivery and validation
 
-The application is implemented and its 51 automated checks pass. The checks cover ASCII and binary STL, invalid/open geometry, exterior versus internal features, manual/support precedence, legal terminal layers, packing, exposure/time estimates, binary SLC layout, and actual worker messages and transfers. Regression checks accept 504,300 triangles in both STL formats and 504,600 combined triangles through worker import and slicing. There is no hard triangle-count cap.
+The application is implemented and its 59 automated checks pass. The checks cover ASCII and binary STL, invalid/open geometry, exterior versus internal features, manual/support precedence, legal terminal layers, packing, exposure/time estimates, binary SLC layout, and actual worker messages and transfers. Regression checks accept 504,300 triangles in both STL formats and 504,600 combined triangles through worker import and slicing. There is no hard triangle-count cap.
+
+Contour regressions reproduce false open loops on a closed rotated cube near vertex elevations. Canonical shared-edge reconstruction now preserves those contours without moving the sampling plane. Other checks cover bounded singular-plane recovery shared by preview/export, exact duplicate and zero-area cleanup, unique precision seams, rejection of genuine gaps/missing faces, preservation of close separate solids, intermediate progress, and structured failure heights through worker messages. UI behavior checks cover byte reading, cancellation and restart, stale-worker isolation, indeterminate stages, and error cleanup. General hole filling and assembly-aware support placement remain outside this implementation.
 
 The Windows launcher was also tested from the user's home folder with only the persistent Windows PATH. It successfully located the existing Codex Node runtime and started the server. Use the full launcher path when calling it from outside the application folder.
 
