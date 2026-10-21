@@ -1,0 +1,12 @@
+node_modules/
+.openai/
+.codex/
+.agents/
+.env
+.env.*
+*.log
+*.zip
+*.tar.gz
+*.slc
+*-recipe.json
+.DS_Store
