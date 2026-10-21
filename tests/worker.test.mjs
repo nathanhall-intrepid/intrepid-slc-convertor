@@ -84,7 +84,7 @@ test('module worker: demo -> packed adaptive plan -> slice -> verified SLC',asyn
   assert.equal(decoded.samplingTable.length,planned.plan.slcRunCount);
   assert.deepEqual(decoded.layers.map(l=>l.thicknessUm),planned.plan.layers.map(l=>l.thicknessUm));
   assert(Math.abs(decoded.topZMm-planned.plan.heightMm)<1e-5);
-  assert.deepEqual([...new Set(exporting.progress.map(p=>p.stage))],['slicing','encoding','verifying']);
+  assert.deepEqual([...new Set(exporting.progress.map(p=>p.stage))],['analyzing','slicing','encoding','verifying']);
 });
 
 test('binary STL buffers transfer, while multiple packed meshes remain usable',async()=>{
@@ -138,4 +138,32 @@ test('more than 255 thickness runs remain viewable and cannot export a truncated
   const exported=await job('export',{meshes:planned.meshes,plan:planned.plan});
   assert.equal(expectType(exported,'error').code,'sampling-table-limit');
   assert.equal(exported.progress.length,0,'table overflow must fail before expensive slicing');
+});
+
+test('import cleans duplicate and zero-area facets and retains the repair report through export',async()=>{
+  const mesh=part(),original=mesh.positions;
+  mesh.positions=new Float64Array([...original,...original.slice(0,9),0,0,0,0,0,0,0,0,0]);
+  mesh.triangleCount=mesh.positions.length/9;
+  const parsing=await job('parse',{files:[{id:'cleanup',name:'cleanup.stl',buffer:binarySTL(mesh)}]});
+  const parsed=expectType(parsing,'parsed');
+  assert.equal(parsed.meshes[0].triangleCount,12);
+  assert.equal(parsed.meshes[0].repair.removedDuplicateTriangles,1);
+  assert.equal(parsed.meshes[0].repair.removedDegenerateTriangles,1);
+  assert.equal(parsed.diagnostics[0].repair.changed,true);
+  for(const stage of ['parsing','analyzing','repairing'])assert(parsing.progress.some(p=>p.stage===stage),stage);
+  assert(parsing.progress.every(p=>p.fileName==='cleanup.stl'&&p.fileIndex===1&&p.fileCount===1));
+  const planned=expectType(await job('plan',{meshes:parsed.meshes,options:{automatic:false,bed}}),'planned');
+  assert.equal(planned.meshes[0].repair.changed,true);
+  const exported=expectType(await job('export',{meshes:planned.meshes,plan:planned.plan}),'exported');
+  assert.equal(decodeSLC(exported.buffer).layers.length,10);
+  assert.equal(exported.recovery.recoveredPlanes,0);
+});
+
+test('unresolved holes retain the offending slice height in worker diagnostics',async()=>{
+  const mesh=part();mesh.positions=Float64Array.from([...mesh.positions.slice(0,36),...mesh.positions.slice(45)]);
+  const error=expectType(await job('slice',{meshes:[mesh],zMm:.05}),'error');
+  assert.equal(error.code,'OPEN_CONTOUR');
+  assert.equal(error.details.zMm,.05);
+  assert.equal(error.details.degree,1);
+  assert(!error.buffer);
 });

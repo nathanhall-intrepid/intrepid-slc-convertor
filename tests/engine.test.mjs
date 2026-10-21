@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {parseSTL,analyzeMesh,computeBounds,transformMesh,createBoxMesh,createDemoMesh,sliceAt,planLayers,sliceBuild,signedArea} from '../dist/engine.js';
+import {parseSTL,analyzeMesh,repairMesh,computeBounds,transformMesh,createBoxMesh,createDemoMesh,sliceAt,planLayers,sliceBuild,signedArea} from '../dist/engine.js';
 import {encodeSLC,decodeSLC} from '../dist/slc.js';
 
 function binary(mesh,header='solid binary STL') {
@@ -22,6 +22,17 @@ function squareProfile(levels,center=[20,20]){
 function denseCavity({from=1,to=4,steps=1500,radius=4,center=[20,20]}={}){
   return reverse(squareProfile(Array.from({length:steps+1},(_,i)=>[from+(to-from)*i/steps,radius+(i%2)*.03]),center));
 }
+function openTorusSeam(gapAngle=2e-6){
+  const steps=32,vertices=[];
+  for(let i=0;i<=steps;i++){const angle=(2*Math.PI-gapAngle)*i/steps;for(const [radius,z] of [[9,0],[11,0],[11,2],[9,2]])vertices.push([radius*Math.cos(angle),radius*Math.sin(angle),z]);}
+  const faces=[];for(let i=0;i<steps;i++)for(let k=0;k<4;k++){const a=i*4+k,b=i*4+(k+1)%4,c=a+4,d=b+4;faces.push([a,d,b],[a,c,d]);}
+  const positions=new Float64Array(faces.flatMap(f=>f.flatMap(v=>vertices[v])));return {name:'precision-seam.stl',positions,triangleCount:faces.length,bounds:computeBounds(positions)};
+}
+function saddleRoof(){
+  const vertices=[[-1,-1,3],[1,-1,1],[1,1,3],[-1,1,1],[0,0,2],[-1,-1,0],[1,-1,0],[1,1,0],[-1,1,0]],faces=[[5,7,6],[5,8,7]];
+  for(let i=0;i<4;i++){const j=(i+1)%4;faces.push([4,i,j],[i,i+5,j+5],[i,j+5,j]);}
+  const positions=new Float64Array(faces.flatMap(f=>f.flatMap(v=>vertices[v])));return {name:'saddle.stl',positions,triangleCount:faces.length,bounds:computeBounds(positions)};
+}
 
 test('binary STL with solid header and ASCII scientific notation parse identically',()=>{
   const cube=createBoxMesh(20,10,8),a=parseSTL(binary(cube),'binary.stl'),b=parseSTL(ascii(cube),'ascii.stl');
@@ -42,6 +53,41 @@ test('cube slice is one CCW four-point ring of correct area; reversed whole mesh
   for(const mesh of [createBoxMesh(20,10,8),reverse(createBoxMesh(20,10,8))]){
     const s=sliceAt([mesh],4);assert.equal(s.rings.length,1);assert.equal(s.rings[0].length,4);assert.equal(s.areaMm2,200);assert.ok(signedArea(s.rings[0])>0);
   }
+});
+test('canonical edge reconstruction closes near-vertex slices without dropping short segments',()=>{
+  const mesh=transformMesh(createBoxMesh(20,20,20),{rotation:[13,27,7],ground:true});
+  assert.ok(analyzeMesh(mesh).watertight);
+  for(const z of [4.008658140868716,21.37205783481846,26.443210688740677]){
+    const slice=sliceAt([mesh],z);assert.equal(slice.rings.length,1);assert.ok(slice.areaMm2>100);assert.equal(slice.sampleZMm,z);assert.equal(slice.recovery.shiftedPlane,false);
+  }
+});
+test('singular closed-mesh planes have a shared, bounded and reported sampling recovery',()=>{
+  const mesh=saddleRoof();assert.ok(analyzeMesh(mesh).watertight);assert.ok(analyzeMesh(mesh).consistentWinding);
+  assert.throws(()=>sliceAt([mesh],2,{recover:false}),error=>error.code==='OPEN_CONTOUR');
+  const preview=sliceAt([mesh],2);assert.equal(preview.recovery.shiftedPlane,true);assert.ok(Math.abs(preview.recovery.shiftMm)<=1e-5);assert.ok(preview.rings.length>0);
+  const plan={layers:[{index:0,zStartMm:1.95,zMm:2.05,thicknessUm:100}],warnings:[]};
+  const build=sliceBuild([mesh],plan);assert.equal(build.layers[0].sampleZMm,preview.sampleZMm);assert.deepEqual(build.layers[0].rings,preview.rings);assert.equal(build.recoveredPlanes,1);assert.ok(build.warnings.some(w=>/sampling planes shifted/.test(w)));
+});
+test('cleanup removes exact duplicate and zero-area facets without changing valid geometry',()=>{
+  const cube=createBoxMesh(10,10,10),positions=new Float64Array([...cube.positions,...cube.positions.slice(0,9),0,0,0,0,0,0,0,0,0]),dirty={...cube,positions,triangleCount:14};
+  const {mesh,report}=repairMesh(dirty);assert.equal(report.removedDuplicateTriangles,1);assert.equal(report.removedDegenerateTriangles,1);assert.equal(report.weldedVertices,0);assert.equal(report.changed,true);assert.equal(report.watertight,true);assert.equal(mesh.triangleCount,12);assert.equal(sliceAt([mesh],5).areaMm2,100);
+});
+test('unique complete precision-scale seams can be repaired, but genuine gaps remain errors',()=>{
+  const cracked=openTorusSeam(),before=analyzeMesh(cracked);assert.equal(before.boundaryEdges,8);assert.throws(()=>sliceAt([cracked],1),error=>error.code==='OPEN_CONTOUR');
+  const {mesh,report}=repairMesh(cracked,{maxGapMm:.0001});assert.equal(report.watertight,true);assert.equal(report.weldedVertices,4);assert.ok(report.maxVertexShiftMm<.0001);assert.equal(report.boundaryEdgesAfter,0);assert.equal(mesh.triangleCount,cracked.triangleCount);assert.equal(sliceAt([mesh],1).rings.length,2);
+  const large=openTorusSeam(.01),unresolved=repairMesh(large,{maxGapMm:.001});assert.equal(unresolved.report.changed,false);assert.equal(unresolved.report.boundaryEdgesAfter,8);assert.throws(()=>sliceAt([unresolved.mesh],1),error=>error.code==='OPEN_CONTOUR');
+  assert.throws(()=>repairMesh(cracked,{maxGapMm:.1}),error=>error.code==='INVALID_REPAIR_TOLERANCE');
+});
+test('repair never merges nearby closed parts or fills a missing thin-wall facet',()=>{
+  const first=createBoxMesh(1,1,1),second=transformMesh(createBoxMesh(1,1,1),{translation:[1.0000005,0,0]}),parts=merge([first,second]);
+  const repaired=repairMesh(parts);assert.equal(repaired.report.weldedVertices,0);assert.equal(sliceAt([repaired.mesh],.5).rings.length,2);
+  const cube=createBoxMesh(20,.00001,10),positions=cube.positions.slice(9),open={...cube,positions,triangleCount:11};
+  const result=repairMesh(open);assert.equal(result.report.changed,false);assert.equal(result.report.boundaryEdgesAfter,3);assert.throws(()=>sliceBuild([result.mesh],planLayers([cube],{automatic:false})),/not watertight/);
+});
+test('parsing, analysis and cleanup report intermediate progress on a larger mesh',()=>{
+  const fixture=denseCavity({steps:1600}),parsing=[],analysis=[],repair=[];
+  const mesh=parseSTL(binary(fixture),'progress.stl',{onProgress:p=>parsing.push(p)});analyzeMesh(mesh,p=>analysis.push(p));repairMesh(mesh,{},p=>repair.push(p));
+  for(const [events,stage] of [[parsing,'parsing'],[analysis,'analyzing'],[repair,'repairing']]){assert.ok(events.some(p=>p.percent>0&&p.percent<100));assert.equal(events.at(-1).percent,100);assert.ok(events.every(p=>p.stage===stage));}
 });
 test('cavity loops are clockwise and overlapping/nested positive solids are rejected',()=>{
   const outer=createBoxMesh(30,30,30),inner=transformMesh(createBoxMesh(10,10,20),{translation:[10,10,5]});
