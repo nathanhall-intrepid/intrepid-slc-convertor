@@ -79,12 +79,15 @@ test('module worker: demo -> packed adaptive plan -> slice -> verified SLC',asyn
   assert(exported.buffer instanceof ArrayBuffer);
   assert.equal(exported.byteLength,exported.buffer.byteLength);
   assert.equal(exported.layerCount,planned.plan.layers.length);
+  assert(exported.contourVertexCount > 0);
+  assert(Number.isInteger(exported.recovery.collapsedVertices));
   const decoded=decodeSLC(exported.buffer);
   assert.equal(decoded.layers.length,planned.plan.layers.length);
   assert.equal(decoded.samplingTable.length,planned.plan.slcRunCount);
   assert.deepEqual(decoded.layers.map(l=>l.thicknessUm),planned.plan.layers.map(l=>l.thicknessUm));
   assert(Math.abs(decoded.topZMm-planned.plan.heightMm)<1e-5);
   assert.deepEqual([...new Set(exporting.progress.map(p=>p.stage))],['analyzing','slicing','encoding','verifying']);
+  assert(exporting.progress.some(p=>p.stage==='verifying'&&p.unit==='bytes'&&p.current>0&&p.current<p.total));
 });
 
 test('binary STL buffers transfer, while multiple packed meshes remain usable',async()=>{
