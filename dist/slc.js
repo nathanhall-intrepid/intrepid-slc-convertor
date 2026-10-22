@@ -46,27 +46,38 @@ function intersects(a, b, c, d) {
   const o1 = orientation(a, b, c), o2 = orientation(a, b, d), o3 = orientation(c, d, a), o4 = orientation(c, d, b);
   return (o1 * o2 < 0 && o3 * o4 < 0) || (!o1 && onSegment(a, b, c)) || (!o2 && onSegment(a, b, d)) || (!o3 && onSegment(c, d, a)) || (!o4 && onSegment(c, d, b));
 }
-function normalizedRing(input, label) {
+function normalizedRing(input, label, quantize = true) {
   if (!Array.isArray(input) || input.length < 3) fail(`${label} must have at least three vertices.`);
-  const r = input.map((p, j) => {
+  const source = input.map((p, j) => {
     if ((!Array.isArray(p) && !ArrayBuffer.isView(p)) || p.length < 2) fail(`${label}, vertex ${j}: expected [x,y].`);
-    return [f32(p[0], `${label} x`), f32(p[1], `${label} y`)];
+    return [finite(p[0], `${label} x`), finite(p[1], `${label} y`)];
   });
-  if (r.length > 1 && equalPoint(r[0], r[r.length - 1])) r.pop();
+  if (source.length > 1 && equalPoint(source[0], source[source.length - 1])) source.pop();
+  const r = []; let collapsedVertices = 0;
+  for (let i = 0; i < source.length; i++) {
+    if (i && equalPoint(source[i], source[i - 1])) fail(`${label} has repeated adjacent vertices.`);
+    const p = quantize ? [f32(source[i][0], `${label} x`), f32(source[i][1], `${label} y`)] : source[i];
+    if (r.length && equalPoint(p, r[r.length - 1])) { collapsedVertices++; continue; }
+    r.push(p);
+  }
+  // Only zero-length edges created by float32 rounding may disappear. Never
+  // merge nonadjacent points or discard a ring to make a contour encodable.
+  if (r.length > 1 && equalPoint(r[0], r[r.length - 1])) { r.pop(); collapsedVertices++; }
   if (r.length < 3) fail(`${label} collapses after float32 conversion.`);
   const seen = new Set();
   for (const p of r) { const key = `${p[0]},${p[1]}`; if (seen.has(key)) fail(`${label} has repeated or float32-collapsed vertices.`); seen.add(key); }
   const area = signedRingArea(r);
   if (Math.abs(area) <= 1e-12) fail(`${label} has zero or negligible area.`);
+  if (quantize && Math.sign(signedRingArea(source)) !== Math.sign(area)) fail(`${label} changes orientation after float32 conversion.`, 'contour-winding');
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const [x, y] of r) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); }
-  return { ring: r, area, minX, maxX, minY, maxY };
+  return { ring: r, area, minX, maxX, minY, maxY, collapsedVertices };
 }
 
 /** Reject self intersections, intersecting rings, and incorrect nesting/winding. */
-function validateRings(inputs, label, maxChecks = 10000000) {
+function validateRings(inputs, label, maxChecks = 10000000, quantize = true) {
   if (!Array.isArray(inputs)) fail(`${label}: rings must be an array.`);
-  const rings = inputs.map((r, i) => normalizedRing(r, `${label}, ring ${i + 1}`));
+  const rings = inputs.map((r, i) => normalizedRing(r, `${label}, ring ${i + 1}`, quantize));
   const edges = [];
   for (let ri = 0; ri < rings.length; ri++) {
     const r = rings[ri].ring;
@@ -97,6 +108,8 @@ function validateRings(inputs, label, maxChecks = 10000000) {
     }
     if ((a.area > 0) !== (depth % 2 === 0)) fail(`${label}, ring ${i + 1}: ${depth % 2 ? 'hole must be clockwise' : 'exterior must be counter-clockwise'}.`, 'contour-winding');
   }
+  // A quantization collapse must not hide a pre-existing intersection or hole.
+  if (quantize && rings.some(r => r.collapsedVertices)) validateRings(inputs, `${label} before float32 conversion`, maxChecks, false);
   return rings;
 }
 
@@ -119,13 +132,9 @@ export function samplingTableForLayers(layers) {
   return entries;
 }
 
-function getExtents(ringsByLayer, firstZ, topZ, supplied) {
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const rings of ringsByLayer) for (const r of rings) {
-    minX = Math.min(minX, r.minX); maxX = Math.max(maxX, r.maxX); minY = Math.min(minY, r.minY); maxY = Math.max(maxY, r.maxY);
-  }
-  if (!Number.isFinite(minX)) fail('The build contains no nonempty contours.', 'empty-build');
-  const extents = { min: [minX, minY, firstZ], max: [maxX, maxY, topZ] };
+function getExtents(bounds, firstZ, topZ, supplied) {
+  if (!Number.isFinite(bounds.minX)) fail('The build contains no nonempty contours.', 'empty-build');
+  const extents = { min: [bounds.minX, bounds.minY, firstZ], max: [bounds.maxX, bounds.maxY, topZ] };
   if (supplied) {
     if (!Array.isArray(supplied.min) || !Array.isArray(supplied.max) || supplied.min.length !== 3 || supplied.max.length !== 3) fail('Extents must contain min/max [x,y,z] arrays.');
     for (let a = 0; a < 3; a++) {
@@ -137,39 +146,114 @@ function getExtents(ringsByLayer, firstZ, topZ, supplied) {
   return extents;
 }
 
-export function encodeSLC(layers, options = {}) {
-  const samplingTable = samplingTableForLayers(layers);
-  const ringsByLayer = layers.map((layer, i) => validateRings(layer.rings, `Layer ${i + 1}`, options.maxGeometryChecks ?? 10000000));
-  const firstZ = samplingTable[0].minZMm, topZ = layers[layers.length - 1].zMm;
-  const extents = getExtents(ringsByLayer, firstZ, topZ, options.extents);
+function encodedHeader(extents, options) {
   const packageName = String(options.packageName ?? 'LayerLab 1.0').replace(/[^\x20-\x7e]/g, '_').replace(/-/g, '_').slice(0, 32);
   const nums = [0, 1, 2].map(a => `${extents.min[a].toFixed(6)},${extents.max[a].toFixed(6)}`).join(' ');
   const headerText = `-SLCVER 2.0 -UNIT MM -TYPE PART -PACKAGE ${packageName} -EXTENTS ${nums} -CHORDDEV 0 -ARCRES 0 -SURFTOL 0 -GAPTOL 0 -MAXGAPFOUND 0 -EXTLWC 0\r\n\x1a`;
   const header = new TextEncoder().encode(headerText);
   if (header.length > HEADER_LIMIT) fail('SLC header exceeds 2048 bytes.');
-  let length = header.length + 256 + 1 + samplingTable.length * 16 + 8;
-  for (const rings of ringsByLayer) { length += 8; for (const r of rings) length += 8 + (r.ring.length + 1) * 8; }
-  if (length > (options.maxBytes ?? MAX_BYTES)) fail('SLC output exceeds the browser export size limit.', 'output-size');
-  const bytes = new Uint8Array(length), view = new DataView(bytes.buffer); let offset = 0;
-  const float = value => { view.setFloat32(offset, value, true); offset += 4; };
-  const uint = value => { view.setUint32(offset, value, true); offset += 4; };
-  bytes.set(header, offset); offset += header.length + 256; // Uint8Array reserved section is zero filled.
-  bytes[offset++] = samplingTable.length;
-  for (const entry of samplingTable) { float(entry.minZMm); float(entry.thicknessMm); float(0); float(0); }
-  layers.forEach((layer, i) => {
-    let start = layer.zMm - layer.thicknessUm / 1000; if (Math.abs(start) < 1e-10) start = 0;
-    float(start); uint(ringsByLayer[i].length);
-    for (const { ring } of ringsByLayer[i]) {
-      uint(ring.length + 1); uint(0); // Closed PART contour: zero gaps.
-      for (const point of [...ring, ring[0]]) { float(point[0]); float(point[1]); }
-    }
-  });
-  float(topZ); uint(SENTINEL);
-  if (offset !== length) fail('Internal SLC byte-length mismatch.');
-  return bytes;
+  return header;
 }
 
-/** Read SLC records and expand contours repeated over multiple sampling layers. */
+function verifyLayerBytes(bytes, minZMm, rings, index) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); let offset = 0;
+  const float = () => { const value = view.getFloat32(offset, true); offset += 4; return value; };
+  const uint = () => { const value = view.getUint32(offset, true); offset += 4; return value; };
+  const invalid = () => fail(`Encoded layer ${index + 1} failed immediate read-back verification.`, 'export-verification');
+  if (float() !== Math.fround(minZMm) || uint() !== rings.length) invalid();
+  for (const { ring } of rings) {
+    if (uint() !== ring.length + 1 || uint() !== 0) invalid();
+    for (let i = 0; i <= ring.length; i++) {
+      const point = ring[i % ring.length];
+      if (float() !== point[0] || float() !== point[1]) invalid();
+    }
+  }
+  if (offset !== bytes.length) invalid();
+}
+
+/**
+ * Incremental writer. Retains compact encoded chunks and layer metadata only;
+ * addLayer validates, normalizes and verifies one layer before releasing rings.
+ * Call finish once after every scheduled layer has been supplied in order.
+ */
+export function createSLCEncoder(planLayers, options = {}) {
+  const samplingTable = samplingTableForLayers(planLayers);
+  const schedule = planLayers.map(({ zMm, thicknessUm }) => ({ zMm, thicknessUm }));
+  const firstZ = samplingTable[0].minZMm, topZ = schedule[schedule.length - 1].zMm;
+  const chunks = [], layerMetadata = [];
+  const bounds = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+  const maxBytes = options.maxBytes ?? MAX_BYTES;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) fail('SLC byte limit must be a positive safe integer.');
+  let state = 'open', chunkBytes = 0;
+  const stats = { layerCount: 0, verifiedLayers: 0, contourVertexCount: 0, encodedVertexCount: 0, collapsedVertices: 0, byteLength: 0 };
+  return {
+    stats, layerMetadata,
+    addLayer(layer) {
+      if (state !== 'open') fail('The SLC encoder is closed or a previous layer failed.', 'encoder-state');
+      try {
+        const index = stats.layerCount, expected = schedule[index];
+        if (!expected || !layer || layer.thicknessUm !== expected.thicknessUm || !near(layer.zMm, expected.zMm)) fail(`Layer ${index + 1} does not match the planned schedule.`, 'layer-schedule');
+        const rings = validateRings(layer.rings, `Layer ${index + 1}`, options.maxGeometryChecks ?? 10000000);
+        let length = 8, vertexCount = 0, collapsedVertices = 0;
+        for (const r of rings) {
+          length += 8 + (r.ring.length + 1) * 8; vertexCount += r.ring.length; collapsedVertices += r.collapsedVertices;
+          bounds.minX = Math.min(bounds.minX, r.minX); bounds.maxX = Math.max(bounds.maxX, r.maxX);
+          bounds.minY = Math.min(bounds.minY, r.minY); bounds.maxY = Math.max(bounds.maxY, r.maxY);
+        }
+        if (chunkBytes + length + 265 + samplingTable.length * 16 > maxBytes) fail('SLC output exceeds the browser export size limit.', 'output-size');
+        const bytes = new Uint8Array(length), view = new DataView(bytes.buffer); let offset = 0;
+        const float = value => { view.setFloat32(offset, value, true); offset += 4; };
+        const uint = value => { view.setUint32(offset, value, true); offset += 4; };
+        let start = expected.zMm - expected.thicknessUm / 1000; if (Math.abs(start) < 1e-10) start = 0;
+        float(start); uint(rings.length);
+        for (const { ring } of rings) {
+          uint(ring.length + 1); uint(0);
+          for (const point of ring) { float(point[0]); float(point[1]); }
+          float(ring[0][0]); float(ring[0][1]);
+        }
+        if (offset !== length) fail('Internal SLC layer byte-length mismatch.');
+        verifyLayerBytes(bytes, start, rings, index);
+        const metadata = { index, minZMm: Math.fround(start), zMm: expected.zMm, thicknessUm: expected.thicknessUm, ringCount: rings.length, vertexCount, collapsedVertices, byteLength: length };
+        chunks.push(bytes); layerMetadata.push(metadata); chunkBytes += length;
+        stats.layerCount++; stats.verifiedLayers++; stats.contourVertexCount += vertexCount;
+        stats.encodedVertexCount += vertexCount + rings.length; stats.collapsedVertices += collapsedVertices;
+        options.onProgress?.({ stage: 'encoding', current: stats.layerCount, total: schedule.length, percent: stats.layerCount / schedule.length * 100, unit: 'layers' });
+        return metadata;
+      } catch (error) { state = 'failed'; chunks.length = 0; throw error; }
+    },
+    finish() {
+      if (state !== 'open') fail('The SLC encoder is closed or a previous layer failed.', 'encoder-state');
+      try {
+        if (stats.layerCount !== schedule.length) fail(`Expected ${schedule.length} layers, received ${stats.layerCount}.`, 'layer-schedule');
+        const extents = getExtents(bounds, firstZ, topZ, options.extents), header = encodedHeader(extents, options);
+        const length = header.length + 256 + 1 + samplingTable.length * 16 + chunkBytes + 8;
+        if (length > maxBytes) fail('SLC output exceeds the browser export size limit.', 'output-size');
+        const bytes = new Uint8Array(length), view = new DataView(bytes.buffer); let offset = 0;
+        const float = value => { view.setFloat32(offset, value, true); offset += 4; };
+        const uint = value => { view.setUint32(offset, value, true); offset += 4; };
+        bytes.set(header); offset = header.length + 256;
+        bytes[offset++] = samplingTable.length;
+        for (const entry of samplingTable) { float(entry.minZMm); float(entry.thicknessMm); float(0); float(0); }
+        for (let i = 0; i < chunks.length; i++) { bytes.set(chunks[i], offset); offset += chunks[i].length; chunks[i] = null; }
+        chunks.length = 0; float(topZ); uint(SENTINEL);
+        if (offset !== length) fail('Internal SLC byte-length mismatch.');
+        stats.byteLength = length; state = 'finished'; return bytes;
+      } catch (error) { state = 'failed'; chunks.length = 0; throw error; }
+    }
+  };
+}
+
+export function encodeSLC(layers, options = {}) {
+  const encoder = createSLCEncoder(layers, options);
+  for (const layer of layers) encoder.addLayer(layer);
+  return encoder.finish();
+}
+
+/**
+ * Read SLC records and expand contours repeated over multiple sampling layers.
+ * retainGeometry:false validates one contour at a time but stores only metadata.
+ * onContour(contour,index) sees the current geometry before it is released.
+ */
 export function decodeSLC(input, options = {}) {
   const bytes = input instanceof Uint8Array ? input : input instanceof ArrayBuffer ? new Uint8Array(input) : null;
   if (!bytes || bytes.byteLength < 267) fail('SLC input is missing or truncated.');
@@ -195,25 +279,36 @@ export function decodeSLC(input, options = {}) {
     if (Math.abs(row.lineWidthCompensationMm) > 1e-12) fail('SLC line-width compensation is not supported by this validator.');
     samplingTable.push(row);
   }
-  const contours = []; let topZMm = null, totalVertices = 0;
+  const retainGeometry = options.retainGeometry !== false;
+  const contours = []; let topZMm = null, totalVertices = 0, contourVertexCount = 0;
+  const progress = () => options.onProgress?.({ stage: 'verifying', current: offset, total: bytes.length, percent: Math.min(100, offset / bytes.length * 100), unit: 'bytes' });
+  progress();
   while (offset < bytes.length) {
     const minZMm = float() * scale, boundaryCount = uint();
     if (boundaryCount === SENTINEL) { topZMm = minZMm; break; }
-    if (contours.length >= MAX_LAYERS || boundaryCount > 200000) fail('SLC contour-count limit exceeded.');
+    // A closed boundary needs two uint32 fields and at least four XY points.
+    // Bound declared counts by the actual available bytes, not a global vertex
+    // budget that rejects a valid large file merely for containing many layers.
+    if (boundaryCount > Math.floor((bytes.length - offset) / 40)) fail('SLC boundary count exceeds the remaining file bytes.');
     if (contours.length && !(minZMm > contours[contours.length - 1].minZMm)) fail('SLC contour Z values must increase strictly.');
-    const rings = [];
+    const rings = []; let vertexCount = 0;
     for (let bi = 0; bi < boundaryCount; bi++) {
-      const vertexCount = uint(), gaps = uint();
+      const storedVertices = uint(), gaps = uint();
       if (gaps !== 0) fail('Open/gapped SLC contours are not supported.');
-      if (vertexCount < 4 || vertexCount > 2000000 || (totalVertices += vertexCount) > 20000000) fail('Invalid SLC vertex count or geometry limit exceeded.');
-      need(vertexCount * 8);
+      if (storedVertices < 4 || storedVertices > Math.floor((bytes.length - offset) / 8)) fail('Invalid SLC vertex count or count exceeds the remaining file bytes.');
+      totalVertices += storedVertices; vertexCount += storedVertices - 1;
+      need(storedVertices * 8);
       const ring = [];
-      for (let j = 0; j < vertexCount; j++) ring.push([float() * scale, float() * scale]);
+      for (let j = 0; j < storedVertices; j++) ring.push([float() * scale, float() * scale]);
       if (!equalPoint(ring[0], ring[ring.length - 1])) fail('SLC PART contour does not explicitly close.');
       ring.pop(); rings.push(ring);
     }
     if (options.validateGeometry !== false) validateRings(rings, `Decoded contour ${contours.length + 1}`, options.maxGeometryChecks ?? 10000000);
-    contours.push({ minZMm, rings });
+    const contour = { minZMm, rings, ringCount: rings.length, vertexCount };
+    options.onContour?.(contour, contours.length);
+    contours.push(retainGeometry ? contour : { minZMm, ringCount: rings.length, vertexCount });
+    contourVertexCount += vertexCount;
+    progress();
   }
   if (topZMm === null || !contours.length) fail('SLC top-of-part terminator or contours are missing.');
   if (offset !== bytes.length) fail('Unexpected bytes after SLC terminator.');
@@ -230,9 +325,13 @@ export function decodeSLC(input, options = {}) {
     if (near(end, fence, tolerance(fence))) end = fence;
     if (!(end > z) || end > fence + tolerance(fence)) fail('Sampling thickness crosses a contour/table/top boundary.');
     const exactUm = row.thicknessMm * 1000;
-    layers.push({ zMm: end, startZMm: z, thicknessUm: Math.abs(exactUm - Math.round(exactUm)) < .01 ? Math.round(exactUm) : exactUm, rings: contours[ci].rings });
+    const contour = contours[ci];
+    const layer = { zMm: end, startZMm: z, thicknessUm: Math.abs(exactUm - Math.round(exactUm)) < .01 ? Math.round(exactUm) : exactUm, ringCount: contour.ringCount, vertexCount: contour.vertexCount };
+    if (retainGeometry) layer.rings = contour.rings;
+    layers.push(layer);
     if (layers.length > MAX_LAYERS) fail('Expanded SLC layer limit exceeded.');
     z = end;
   }
-  return { version: '2.0', unit: 'MM', sourceUnit: unitMatch[1], type: typeMatch[1], header, samplingTable, contours, layers, topZMm, byteLength: bytes.length };
+  progress();
+  return { version: '2.0', unit: 'MM', sourceUnit: unitMatch[1], type: typeMatch[1], header, samplingTable, contours, layers, contourCount: contours.length, layerCount: layers.length, totalVertices, contourVertexCount, topZMm, byteLength: bytes.length, retainGeometry };
 }

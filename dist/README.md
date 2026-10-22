@@ -39,7 +39,7 @@ SLC export writes **minimum-Z contour records** with a sampling table. Each mask
 
 Download the companion recipe for the schedule, resin inputs, timing assumptions, placement information, and reported cleanup/recovery. A singular sampling plane may move by a tiny recorded amount while physical layer heights remain unchanged. SLC itself does not carry the exposure recipe. A recipe is not a geometry archive: reload the STL files and verify units, orientation, and placement when rebuilding a job. Verify representative constant and variable-thickness files in your internal reader before production use.
 
-Limits include 32 parts, 200 MB per imported batch, 20,000 layers, and 3 million exported contour vertices. There is no hard triangle-count cap; browser memory and processing time still constrain complex files.
+Limits include 32 parts, 200 MB per imported batch, 20,000 layers, and 512 MB of encoded SLC output. There is no hard triangle-count or total contour-vertex cap. Export slices, checks, and encodes one layer at a time to keep working memory bounded by a layer plus the output file; browser memory and processing time still constrain complex files.
 
 Models are processed locally in your browser and are not uploaded by the app. Sharing the app URL does not share models, resin profiles, or settings. Reloading the page clears the loaded geometry.
 

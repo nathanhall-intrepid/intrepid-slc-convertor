@@ -4,7 +4,7 @@
  * Repair is limited to reported cleanup and precision-scale boundary seams;
  * semantic lattice/support classification and general hole filling are not claimed.
  */
-export const ENGINE_LIMITS = Object.freeze({maxLayers:20000,maxContourVertices:3000000,maxFileBytes:200*1024*1024});
+export const ENGINE_LIMITS = Object.freeze({maxLayers:20000,maxFileBytes:200*1024*1024});
 
 export class GeometryError extends Error {
   constructor(message, code='GEOMETRY_ERROR', details={}) { super(message); this.name='GeometryError'; this.code=code; this.details=details; }
@@ -419,19 +419,28 @@ export function planLayers(meshes,options={},onProgress=()=>{}) {
   return {layers,heightMm:heightUm/1000,actualHeightMm:actualMaxZ,heightUm,baselineUm,preferredUm,supportEndMm:supportEndUm/1000,overrides,verticalToleranceDeg:angle,warnings,classificationSamples:sampleCount,maskConvention:'midpoint masks; zMm is interval end'};
 }
 
-export function sliceBuild(meshes,plan,onProgress=()=>{}) {
+/** Yield one completely validated layer at a time. Consumers can serialize and
+ * release its rings immediately; only the current slice is retained here. The
+ * final iterator return is the build summary, including all recovery warnings. */
+export function* sliceLayerIterator(meshes,plan,onProgress=()=>{}) {
   if(!Array.isArray(meshes))meshes=[meshes];
   for(const mesh of meshes){const check=analyzeMesh(mesh);if(!check.watertight)fail(`${mesh.name||'STL'} is not watertight: ${check.boundaryEdges} open and ${check.nonManifoldEdges} non-manifold edges. Repair it before export.`,'INVALID_MESH',check);if(check.inconsistentEdges)fail(`${mesh.name||'STL'} has inconsistent facet winding. Repair orientation before export.`,'INVALID_WINDING',check);}
-  const layers=[];let vertices=0,recoveredPlanes=0,maxPlaneShiftMm=0;
+  let vertices=0,recoveredPlanes=0,maxPlaneShiftMm=0;
   for(let i=0;i<plan.layers.length;i++){
     const layer=plan.layers[i],mid=(layer.zStartMm+layer.zMm)/2,slice=sliceAt(meshes,mid,{zBounds:[layer.zStartMm,layer.zMm]});
     if(slice.recovery.shiftedPlane){recoveredPlanes++;maxPlaneShiftMm=Math.max(maxPlaneShiftMm,Math.abs(slice.recovery.shiftMm));}
-    vertices+=slice.vertexCount;if(vertices>ENGINE_LIMITS.maxContourVertices)fail('Sliced contours exceed the 3-million-vertex export limit. Reduce build complexity.','EXPORT_TOO_LARGE');
-    layers.push({...layer,rings:slice.rings,areaMm2:slice.areaMm2,sampleZMm:slice.sampleZMm,recovery:slice.recovery});
-    if(i%10===0||i===plan.layers.length-1)onProgress({stage:'slicing',current:i+1,total:plan.layers.length,percent:(i+1)/plan.layers.length*100});
+    vertices+=slice.vertexCount;
+    if(i%10===0||i===plan.layers.length-1)onProgress({stage:'slicing',current:i+1,total:plan.layers.length,percent:(i+1)/plan.layers.length*100,contourVertexCount:vertices});
+    yield {...layer,rings:slice.rings,areaMm2:slice.areaMm2,sampleZMm:slice.sampleZMm,recovery:slice.recovery};
   }
-  const warnings=[...plan.warnings];if(recoveredPlanes)warnings.push(`${recoveredPlanes} singular sampling planes shifted by at most ${maxPlaneShiftMm.toExponential(2)} mm; layer endpoints are unchanged.`);
-  return {...plan,layers,warnings,contourVertexCount:vertices,recoveredPlanes,maxPlaneShiftMm};
+  const warnings=[...(plan.warnings||[])];if(recoveredPlanes)warnings.push(`${recoveredPlanes} singular sampling planes shifted by at most ${maxPlaneShiftMm.toExponential(2)} mm; layer endpoints are unchanged.`);
+  return {warnings,contourVertexCount:vertices,recoveredPlanes,maxPlaneShiftMm};
+}
+
+/** Compatibility collector; streaming export should use sliceLayerIterator. */
+export function sliceBuild(meshes,plan,onProgress=()=>{}) {
+  const layers=[],iterator=sliceLayerIterator(meshes,plan,onProgress);
+  for(;;){const next=iterator.next();if(next.done)return {...plan,layers,...next.value};layers.push(next.value);}
 }
 
 /** Closed indexed primitive fixtures are also used for the built-in demo. */

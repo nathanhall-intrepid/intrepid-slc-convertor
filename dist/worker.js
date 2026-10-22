@@ -1,7 +1,7 @@
 /** Browser-local job worker. Cancel a job by terminating its worker instance. */
-import { ENGINE_LIMITS, parseSTL, analyzeMesh, repairMesh, computeBounds, createDemoMesh, planLayers, sliceBuild, sliceAt } from './engine.js?v=20261021.2';
-import { packBuild, validateLayout } from './layout.js?v=20261021.2';
-import { encodeSLC, decodeSLC, samplingTableForLayers } from './slc.js';
+import { ENGINE_LIMITS, parseSTL, analyzeMesh, repairMesh, computeBounds, createDemoMesh, planLayers, sliceLayerIterator, sliceAt } from './engine.js?v=20261021.3';
+import { packBuild, validateLayout } from './layout.js?v=20261021.3';
+import { createSLCEncoder, decodeSLC, samplingTableForLayers } from './slc.js?v=20261021.3';
 
 const MAX_PARTS = 32;
 const fail = (message, code = 'INVALID_JOB', details = {}) => { const error = new Error(message); error.code = code; error.details = details; throw error; };
@@ -59,15 +59,12 @@ function checkedPlan(input, meshes) {
   samplingTableForLayers(layers);
   return { ...input, layers, heightUm, heightMm: heightUm / 1000, actualHeightMm: bounds.max[2] };
 }
-function verifyDecoded(decoded, sliced) {
-  if (decoded.layers.length !== sliced.layers.length) fail('SLC read-back layer count differs from the plan.', 'EXPORT_VERIFICATION');
-  for (let i = 0; i < sliced.layers.length; i++) {
-    const a = sliced.layers[i], b = decoded.layers[i];
-    if (a.thicknessUm !== b.thicknessUm || Math.abs(Math.fround(a.zMm) - b.zMm) > Math.max(1e-6, Math.abs(a.zMm) * 3e-7) || a.rings.length !== b.rings.length) fail(`SLC read-back differs at layer ${i + 1}.`, 'EXPORT_VERIFICATION');
-    for (let j = 0; j < a.rings.length; j++) {
-      if (a.rings[j].length !== b.rings[j].length) fail(`SLC vertex count differs at layer ${i + 1}.`, 'EXPORT_VERIFICATION');
-      for (let k = 0; k < a.rings[j].length; k++) for (let axis = 0; axis < 2; axis++) if (Math.fround(a.rings[j][k][axis]) !== b.rings[j][k][axis]) fail(`SLC coordinate differs at layer ${i + 1}.`, 'EXPORT_VERIFICATION');
-    }
+function verifyDecoded(decoded, plan, layerMetadata) {
+  if (decoded.layers.length !== plan.layers.length) fail('SLC read-back layer count differs from the plan.', 'EXPORT_VERIFICATION');
+  for (let i = 0; i < plan.layers.length; i++) {
+    const a = plan.layers[i], b = decoded.layers[i];
+    if (a.thicknessUm !== b.thicknessUm || Math.abs(Math.fround(a.zMm) - b.zMm) > Math.max(1e-6, Math.abs(a.zMm) * 3e-7)) fail(`SLC read-back differs at layer ${i + 1}.`, 'EXPORT_VERIFICATION');
+    if (b.ringCount !== layerMetadata[i].ringCount || b.vertexCount !== layerMetadata[i].vertexCount) fail(`SLC contour counts differ at layer ${i + 1}.`, 'EXPORT_VERIFICATION');
   }
 }
 
@@ -137,16 +134,26 @@ export function handleWorkerRequest(request, emit) {
     if (request.type === 'export') {
       const plan = checkedPlan(request.plan, meshes);
       assertPrintable(meshes, progress);
-      const sliced = sliceBuild(meshes, plan, progress);
       const bounds = buildBounds(meshes);
+      const encoder = createSLCEncoder(plan.layers, { extents: { min: [bounds.min[0], bounds.min[1], 0], max: [bounds.max[0], bounds.max[1], plan.heightMm] } });
+      const iterator = sliceLayerIterator(meshes, plan, progress);
+      let result;
+      // Each contour is normalized, checked and read back before its arrays are
+      // released. Retain compact encoded bytes rather than the entire build's rings.
+      while (!(result = iterator.next()).done) encoder.addLayer(result.value);
+      const sliced = result.value;
       progress({ stage: 'encoding', current: 0, total: 1, percent: 0 });
-      const bytes = encodeSLC(sliced.layers, { extents: { min: [bounds.min[0], bounds.min[1], 0], max: [bounds.max[0], bounds.max[1], plan.heightMm] } });
+      const bytes = encoder.finish();
       progress({ stage: 'encoding', current: 1, total: 1, percent: 100 });
       progress({ stage: 'verifying', current: 0, total: 1, percent: 0 });
-      const decoded = decodeSLC(bytes); verifyDecoded(decoded, sliced);
+      const decoded = decodeSLC(bytes, { retainGeometry: false, onProgress: value => progress({ ...value, stage: 'verifying' }) }); verifyDecoded(decoded, plan, encoder.layerMetadata);
+      if (encoder.stats.verifiedLayers !== plan.layers.length || decoded.contourVertexCount !== encoder.stats.contourVertexCount || decoded.totalVertices !== encoder.stats.encodedVertexCount) fail('SLC read-back contour counts differ from the verified layers.', 'EXPORT_VERIFICATION');
       progress({ stage: 'verifying', current: 1, total: 1, percent: 100 });
-      const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-      emit({ id, type: 'exported', buffer, layerCount: sliced.layers.length, byteLength: buffer.byteLength, warnings: sliced.warnings || [], recovery: { recoveredPlanes: sliced.recoveredPlanes || 0, maxPlaneShiftMm: sliced.maxPlaneShiftMm || 0 } }, [buffer]); return;
+      const collapsedVertices = encoder.stats.collapsedVertices || 0;
+      const warnings = [...(sliced.warnings || [])];
+      if (collapsedVertices) warnings.push(`${collapsedVertices} consecutive contour points became identical at SLC float32 precision and were coalesced; closed contours and winding were verified after conversion.`);
+      const buffer = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes.buffer : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      emit({ id, type: 'exported', buffer, layerCount: plan.layers.length, byteLength: buffer.byteLength, warnings, recovery: { recoveredPlanes: sliced.recoveredPlanes || 0, maxPlaneShiftMm: sliced.maxPlaneShiftMm || 0, collapsedVertices }, contourVertexCount: sliced.contourVertexCount }, [buffer]); return;
     }
     fail(`Unknown worker task: ${request.type}.`, 'UNKNOWN_JOB');
   } catch (error) {
