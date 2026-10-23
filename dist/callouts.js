@@ -64,6 +64,9 @@ export class LayerCallouts {
     this.lines = document.createElementNS(SVG_NS, 'svg');
     this.lines.classList.add('layer-callout-lines');
     this.lines.setAttribute('aria-hidden', 'true');
+    this.boundaries = document.createElementNS(SVG_NS, 'g');
+    this.boundaries.classList.add('layer-boundaries');
+    this.lines.appendChild(this.boundaries);
     this.root.appendChild(this.lines);
     container.appendChild(this.root);
     this._queue = () => this.refresh();
@@ -162,6 +165,21 @@ export class LayerCallouts {
     const labelWidth = clamp(width * .28, 133, 181), left = 14;
     const labelRight = left + labelWidth;
     const anchorX = Math.min(width - 64, Math.max(labelRight + 34, width * .51));
+    this.boundaries.replaceChildren();
+    // Region transitions, not individual print layers; keep nearby lines legible.
+    const elevations=[...new Set(this.regions.flatMap(r=>[r.fromMm,r.toMm]))].sort((a,b)=>b-a);
+    let previousY=-Infinity;
+    for(const z of elevations){
+      const y=this.viewer.heightToScreen(z);
+      if(!Number.isFinite(y)||y<top||y>bottom||y-previousY<9)continue;
+      previousY=y;
+      const line=document.createElementNS(SVG_NS,'path');
+      line.setAttribute('d',`M ${labelRight+18} ${y} H ${width-56}`);
+      const label=document.createElementNS(SVG_NS,'text');
+      label.setAttribute('x',width-61);label.setAttribute('y',y-5);label.setAttribute('text-anchor','end');
+      label.textContent=`${mm(z)} mm`;
+      this.boundaries.append(line,label);
+    }
     const minCenter = top + labelHeight / 2, maxCenter = bottom - labelHeight / 2;
     const centers = visible.map(({anchorY}) => clamp(anchorY, minCenter, maxCenter));
     for (let i = 1; i < centers.length; i++) centers[i] = Math.max(centers[i], centers[i - 1] + labelHeight + gap);

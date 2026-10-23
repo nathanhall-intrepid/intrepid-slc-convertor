@@ -5,6 +5,8 @@
 .layer-callout-lines{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none}
 .layer-callout-lines path{fill:none;stroke-width:1;opacity:.55}
 .layer-callout-lines circle{opacity:.8}
+.layer-callout-lines .layer-boundaries path{stroke:#d8e2d9;stroke-width:1.5;stroke-dasharray:6 5;opacity:.7;filter:drop-shadow(0 1px 1px #000)}
+.layer-boundaries text{fill:#d8e2d9;font:10px Consolas,monospace;paint-order:stroke;stroke:#080909;stroke-width:3px;stroke-linejoin:round}
 .layer-callout{position:absolute;display:flex;flex-direction:column;justify-content:center;gap:2px;padding:7px 10px;text-align:left;pointer-events:auto;border:1px solid #3f554b;border-left:2px solid var(--callout-color);border-radius:3px;background:#0c1512ed;box-shadow:0 3px 16px #0003;font-weight:400;overflow:hidden}
 .layer-callout:hover:not(:disabled),.layer-callout.is-selected{background:#192e23f5;border-color:var(--callout-color)}
 .layer-callout-thickness{font-size:16px;line-height:1.15;font-weight:500;color:var(--callout-color)}
@@ -26,3 +28,31 @@
 .error-box{white-space:pre-line}
 .mesh-repair-note{grid-column:1/-1;font:10px/1.5 Consolas,'Courier New',monospace;color:#b4d6c1}
 @media(max-width:480px){.operation-panel{top:8px;padding:13px;width:calc(100% - 16px)}.operation-heading{gap:8px;margin-bottom:10px}.operation-heading h2{font-size:16px}.operation-heading button{padding:7px;font-size:10px}.operation-stage-row{display:block}.operation-stage-row>span{display:block;text-align:left;margin-top:3px}.operation-details{font-size:9px}}
+/* Intrepid visual language: near-black surfaces, pale type, fine technical rules. */
+:root{--bg:#070808;--panel:#101212;--panel2:#171a19;--line:#303735;--text:#e1e9df;--muted:#a8b0aa;--mint:#d6e5d4;--accent:#b7cfbb}
+body{background:var(--bg)}
+.topbar{background:#050606;border-bottom-color:#242a27}
+.brand strong{font-weight:650;letter-spacing:-1.2px}.brand-mark{color:var(--text)}
+.intro{position:relative;padding:22px 20px 24px;border-bottom:1px solid var(--line);margin-bottom:26px}
+.intro:before,.intro:after{content:'';position:absolute;width:9px;height:9px;opacity:.7}
+.intro:before{top:5px;left:0;border-top:1px solid #819084;border-left:1px solid #819084}
+.intro:after{right:0;bottom:14px;border-right:1px solid #819084;border-bottom:1px solid #819084}
+h1{font-weight:650;font-size:clamp(32px,3.6vw,54px);letter-spacing:-2.2px}.intro h1 span{color:var(--text)}
+.eyebrow{letter-spacing:1.8px}.subtitle{color:#aeb7b0;max-width:620px}
+button{border-radius:3px}.primary{background:#dce6d8;border-color:#dce6d8;color:#101511}.primary:hover:not(:disabled){background:#eef4e9;color:#050706}
+.outline{border-color:#58625c}.outline:hover:not(:disabled),button:hover:not(:disabled){background:#242b26}.primary:hover:not(:disabled){background:#eef4e9}
+.panel,.viewport-panel,.plan-panel,.summary-panel,.resin-panel,.diagnostic-panel{border-radius:3px;background:#101212}
+.section-heading h2{font-weight:600}.step{color:#c6d1c7}.tag{border-radius:2px}
+input:not([type=range]):not([type=checkbox]),select{background:#090c0b;border-color:#48534b;color:#edf2e9;border-radius:3px;min-height:36px}
+input:focus,select:focus{border-color:#cbdcc9;box-shadow:0 0 0 1px #cbdcc933}
+.dropzone{background:#131715;border-color:#67766b;border-radius:3px}.dropzone.dragover{background:#222e25}
+.part-row,.region-card{background:#171c19}.region-card{border-top:1px solid #313c34}
+.view-stage{background:#080909}.viewport-panel{border:1px solid #5b6960;box-shadow:0 0 0 1px #000}
+.viewport-toolbar{background:#171d19;border-bottom:1px solid #4c5a50}.view-tabs button[aria-pressed=true]{background:#dce6d8;color:#101511}
+.layer-callout{background:#101613f5;border-color:#617066;border-radius:2px}.layer-callout:hover:not(:disabled),.layer-callout.is-selected{background:#253127}
+.layer-callout-lines>path{stroke-width:1.3;opacity:.8}
+.height-rail{border-color:#65776b}.rail-selection{background:#d6e5d429;border-top-width:3px;border-bottom-width:3px}
+.schedule-strip{border-radius:2px}.schedule-strip button+button{border-left:1px solid #151e18}
+.export-panel{background:#171f19;border-color:#657662;border-radius:3px}.export-panel h2{font-weight:600}
+.operation-panel{background:#121a15f7;border-color:#a1b39f}.toast{background:#dce6d8;color:#102016;border-color:#dce6d8}
+@media(max-width:780px){.intro{padding:16px 12px 20px}.intro h1{letter-spacing:-1.4px}}
