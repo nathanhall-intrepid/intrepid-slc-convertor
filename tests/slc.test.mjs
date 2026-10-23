@@ -27,6 +27,24 @@ test('mixed schedule is encoded as minimum-Z records with explicit top terminato
   assert.equal(v.getFloat32(end+257+4,true),Math.fround(.1));
 });
 
+test('Intrepid SVG compatibility: header ends at last contour, sentinel retains final layer top', () => {
+  for (const supplied of [undefined, {min:[-1,-2,0],max:[11,12,.65]}]) {
+    const before = supplied && structuredClone(supplied);
+    const d = decodeSLC(encodeSLC(layers, {extents:supplied}));
+    const match = d.header.match(/-EXTENTS\s+(\S+)\s+(\S+)\s+(\S+)/);
+    assert.equal(match[3], '0.000000,0.450000');
+    assert.ok(Math.abs(d.topZMm-.65)<1e-6);
+    assert.deepEqual(d.layers.map(l=>l.thicknessUm),[100,150,150,50,200]);
+    if (supplied) {
+      assert.equal(match[1], '-1.000000,11.000000');
+      assert.deepEqual(supplied,before);
+    }
+  }
+  const single=decodeSLC(encodeSLC([layers[0]]));
+  assert.match(single.header, /-EXTENTS 0.000000,10.000000 0.000000,10.000000 0.000000,0.000000 /);
+  assert.ok(Math.abs(single.topZMm-.1)<1e-7);
+});
+
 test('independent byte fixture: a single cube contour repeated to top of part', () => {
   const header=new TextEncoder().encode('-SLCVER 2.0 -UNIT MM -TYPE PART -PACKAGE independent fixture -EXTENTS 0,1 0,1 0,0.3\r\n\x1a');
   // Fixed schema assembled independently of encodeSLC: 1 table, 1 closed contour, sentinel.
