@@ -44,3 +44,28 @@ input:not([type=range]):not([type=checkbox]),select{font-family:var(--mono);font
 .layer-callout{background:#0f110ff5;border-color:#657665;border-radius:0;text-transform:none;letter-spacing:0}.layer-callout:hover:not(:disabled),.layer-callout.is-selected{background:#161a16;color:var(--text);border-color:var(--accent)}.layer-callout-lines>path{stroke-width:1.3;opacity:.8}.layer-boundaries text{stroke:#0f110f}.height-rail{border-color:#9db09d}.rail-selection{background:#ff48001a;border-color:var(--accent);border-top-width:2px;border-bottom-width:2px}.schedule-strip{border-radius:0}.schedule-strip button{border:0}.schedule-strip button+button{border-left:1px solid #000}.preset-row button{border-radius:0}.preset-row button.selected{background:var(--text);color:#000}
 .export-panel{border-top:1px solid var(--text);background:var(--panel);border-radius:0}.export-panel h2{font-size:24px;font-weight:500}.export-panel .eyebrow{color:var(--accent)}.export-panel p:not(.eyebrow){color:var(--muted)}.operation-panel{background:#0f110ff7;border:1px solid var(--text);border-left:3px solid var(--accent);border-radius:0}.operation-panel progress{accent-color:var(--accent)}.operation-panel progress::-webkit-progress-value{background:var(--accent)}.toast{background:var(--text);color:#000;border-color:var(--text);border-left:3px solid var(--accent);border-radius:0}.error-box{border-radius:0}.time-breakdown{color:var(--muted)}dialog{background:var(--panel);border-color:var(--text);border-radius:0}th{background:var(--panel)}footer{border-top:1px solid var(--text);color:var(--muted);padding:16px 0}footer>span:first-child{color:var(--accent)}
 @media(max-width:1400px){.topbar{margin:0 24px}}@media(max-width:1100px){.workspace{grid-template-columns:300px minmax(0,1fr)}}@media(max-width:780px){.topbar{margin:0 16px;padding:18px 0;flex-wrap:wrap;gap:14px}.brand-logo{width:130px;height:32px}.top-actions{margin-left:auto}.brand .mono{font-size:9px}main{padding:20px 16px 0}.workspace{grid-template-columns:1fr}.intro h1{font-size:28px}.view-stage{height:410px}}@media(max-width:480px){.brand-divider,.brand .mono{display:none}.view-stage{height:355px}.view-tabs button{padding:4px 6px}.intro h1{font-size:28px}.section-heading h2{font-size:11px}}
+/* User-selectable light palette, shared with the Mold Generator reference. */
+:root[data-theme=light]{color-scheme:light;--bg:#e2ece2;--panel:#fff;--panel2:#f2f6f2;--line:#b9c7b9;--text:#000;--muted:#4d554f;--mint:#000}
+:root[data-theme=light] .view-stage{background:#f2f6f2}
+:root[data-theme=light] .primary{color:#000}
+:root[data-theme=light] .primary:hover:not(:disabled){background:#000;color:#e2ece2}
+:root[data-theme=light] .view-tabs button[aria-pressed=true],:root[data-theme=light] .preset-row button.selected{background:#000;color:#e2ece2}
+:root[data-theme=light] .view-badge,:root[data-theme=light] .orbit-hint{background:#fffffff0;color:#4d554f}
+:root[data-theme=light] .layer-callout{background:#fffffff5;color:#000;border-color:#7f927f}
+:root[data-theme=light] .layer-callout:hover:not(:disabled),:root[data-theme=light] .layer-callout.is-selected{background:#f2f6f2;color:#000;border-color:#ff4800}
+:root[data-theme=light] .layer-callout-thickness{color:#000}
+:root[data-theme=light] .layer-callout-lines>path{stroke:#526952;opacity:.85}
+:root[data-theme=light] .layer-callout-lines .layer-boundaries path{stroke:#526952;filter:none}
+:root[data-theme=light] .layer-boundaries text{fill:#334733;stroke:#f2f6f2}
+:root[data-theme=light] .operation-panel{background:#fffffff7;color:#000}
+:root[data-theme=light] .toast{background:#000;color:#e2ece2}
+:root[data-theme=light] .error-box{background:#fff0e9;color:#8c2800;border-color:#c85528}
+:root[data-theme=light] .region-card:hover{background:#e2ece2;color:#000}
+:root[data-theme=light] tbody tr:hover{background:#e2ece2}
+:root[data-theme=light] .part-row small,:root[data-theme=light] .part-row .micro{color:#4d554f}
+#themeButton{white-space:nowrap}
+@media(max-width:1050px){.top-actions .local-status{display:none}}
+@media(max-width:480px){.topbar{gap:10px}.top-actions{gap:6px}.top-actions button{font-size:10px;padding:6px}.brand-logo{width:115px}}
+:root[data-theme=light] .build-name,:root[data-theme=light] .layer-callout-range{color:#000}
+:root[data-theme=light] .layer-callout-reason,:root[data-theme=light] .rail-top,:root[data-theme=light] .rail-bottom,:root[data-theme=light] .fields label>span,:root[data-theme=light] .dropzone small{color:#4d554f}
+:root[data-theme=light] .method-note{background:#f2f6f2;color:#4d554f}

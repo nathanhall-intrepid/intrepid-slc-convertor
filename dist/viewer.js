@@ -150,17 +150,23 @@ export class BuildViewer {
     this._updateHelpers();this.requestRender();
   }
 
+  setTheme(theme){
+    this.light=theme==='light';if(this.failed)return;
+    const bg=this.light?'#f2f6f2':'#0f110f';this.scene.background.set(bg);this.renderer.setClearColor(bg,1);
+    this.setBed(this.bed.width,this.bed.depth);this._updateHelpers();this.requestRender();
+  }
+
   setBed(width,depth){
     if(!Number.isFinite(width)||!Number.isFinite(depth)||width<=0||depth<=0)return;
     this.bed={width,depth};if(this.failed)return;
     for(const o of [...this.bedGroup.children]){this.bedGroup.remove(o);o.geometry?.dispose();o.material?.dispose();}
-    const plate=new THREE.Mesh(new THREE.PlaneGeometry(width,depth),new THREE.MeshBasicMaterial({color:'#0c1511',side:THREE.DoubleSide}));plate.position.set(width/2,depth/2,-.025);this.bedGroup.add(plate);
+    const plate=new THREE.Mesh(new THREE.PlaneGeometry(width,depth),new THREE.MeshBasicMaterial({color:this.light?'#e2ece2':'#0c1511',side:THREE.DoubleSide}));plate.position.set(width/2,depth/2,-.025);this.bedGroup.add(plate);
     const target=Math.min(width,depth)/14,power=10**Math.floor(Math.log10(target)),step=([1,2,5,10].find(n=>n*power>=target)||10)*power,grid=[];
     for(let x=0;x<=width+1e-8;x+=step)grid.push(x,0,-.012,x,depth,-.012);
     for(let y=0;y<=depth+1e-8;y+=step)grid.push(0,y,-.012,width,y,-.012);
-    const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(grid,3));this.bedGroup.add(new THREE.LineSegments(g,new THREE.LineBasicMaterial({color:'#284437',transparent:true,opacity:.55})));
+    const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(grid,3));this.bedGroup.add(new THREE.LineSegments(g,new THREE.LineBasicMaterial({color:this.light?'#b9c7b9':'#284437',transparent:true,opacity:.55})));
     const border=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0,0,0),new THREE.Vector3(width,0,0),new THREE.Vector3(width,depth,0),new THREE.Vector3(0,depth,0),new THREE.Vector3(0,0,0)]);
-    this.bedGroup.add(new THREE.Line(border,new THREE.LineBasicMaterial({color:'#547461',transparent:true,opacity:.75})));
+    this.bedGroup.add(new THREE.Line(border,new THREE.LineBasicMaterial({color:this.light?'#667766':'#547461',transparent:true,opacity:.75})));
     if(this.mode==='plate')this._fitCamera();this.requestRender();
   }
 
@@ -194,7 +200,7 @@ export class BuildViewer {
       const points=this.mode==='side'?[new THREE.Vector3(xmin,y,z),new THREE.Vector3(xmax,y,z)]:[new THREE.Vector3(xmin,b.min.y-margin,z),new THREE.Vector3(xmax,b.min.y-margin,z),new THREE.Vector3(xmax,b.max.y+margin,z),new THREE.Vector3(xmin,b.max.y+margin,z),new THREE.Vector3(xmin,b.min.y-margin,z)];
       const geo=new THREE.BufferGeometry().setFromPoints(points),mat=new THREE.LineBasicMaterial({color,transparent:true,opacity,depthTest:false}),obj=new THREE.Line(geo,mat);obj.renderOrder=10;this.helperGroup.add(obj);
     };
-    if(this.selection){line(this.selection.fromMm,'#c2f7df',.9);line(this.selection.toMm,'#c2f7df',.9);}
+    if(this.selection){line(this.selection.fromMm,this.light?'#b33200':'#c2f7df',.9);line(this.selection.toMm,this.light?'#b33200':'#c2f7df',.9);}
     if(this.layerZ!==null)line(this.layerZ,'#ffc475',.85);
     this.helperGroup.visible=this.mode!=='plate';
   }
