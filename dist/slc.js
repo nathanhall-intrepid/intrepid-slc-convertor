@@ -132,7 +132,7 @@ export function samplingTableForLayers(layers) {
   return entries;
 }
 
-function getExtents(bounds, firstZ, topZ, supplied) {
+function getExtents(bounds, firstZ, topZ, lastContourZ, supplied) {
   if (!Number.isFinite(bounds.minX)) fail('The build contains no nonempty contours.', 'empty-build');
   const extents = { min: [bounds.minX, bounds.minY, firstZ], max: [bounds.maxX, bounds.maxY, topZ] };
   if (supplied) {
@@ -141,9 +141,12 @@ function getExtents(bounds, firstZ, topZ, supplied) {
       finite(supplied.min[a], 'Minimum extent'); finite(supplied.max[a], 'Maximum extent');
       if (supplied.min[a] > extents.min[a] + tolerance(extents.min[a]) || supplied.max[a] < extents.max[a] - tolerance(extents.max[a])) fail('Supplied model extents do not enclose the sliced geometry.');
     }
-    return supplied;
   }
-  return extents;
+  // Materialise/Intrepid compatibility: header Z spans contour records, not
+  // the final layer top. The top remains in the sentinel and sampling table.
+  // Validate supplied model bounds above, but do not let them override this.
+  const source = supplied ?? extents;
+  return { min: [source.min[0], source.min[1], firstZ], max: [source.max[0], source.max[1], lastContourZ] };
 }
 
 function encodedHeader(extents, options) {
@@ -225,7 +228,9 @@ export function createSLCEncoder(planLayers, options = {}) {
       if (state !== 'open') fail('The SLC encoder is closed or a previous layer failed.', 'encoder-state');
       try {
         if (stats.layerCount !== schedule.length) fail(`Expected ${schedule.length} layers, received ${stats.layerCount}.`, 'layer-schedule');
-        const extents = getExtents(bounds, firstZ, topZ, options.extents), header = encodedHeader(extents, options);
+        const last = schedule[schedule.length - 1];
+        const lastContourZ = Math.max(firstZ, last.zMm - last.thicknessUm / 1000);
+        const extents = getExtents(bounds, firstZ, topZ, lastContourZ, options.extents), header = encodedHeader(extents, options);
         const length = header.length + 256 + 1 + samplingTable.length * 16 + chunkBytes + 8;
         if (length > maxBytes) fail('SLC output exceeds the browser export size limit.', 'output-size');
         const bytes = new Uint8Array(length), view = new DataView(bytes.buffer); let offset = 0;
