@@ -1,6 +1,6 @@
-import {BuildViewer} from './viewer.js?v=20261023.1';
-import {LayerCallouts} from './callouts.js?v=20261023.1';
-import {transformMesh} from './engine.js?v=20261023.1';
+import {BuildViewer} from './viewer.js?v=20261023.2';
+import {LayerCallouts} from './callouts.js?v=20261023.2';
+import {transformMesh} from './engine.js?v=20261023.2';
 import {DEMO_PROFILE,validateProfile,validateCycle,compareTimes,exposureSeconds,formatDuration} from './process.js';
 
 const $=id=>document.getElementById(id), $$=s=>[...document.querySelectorAll(s)];
@@ -61,7 +61,7 @@ function rpc(type,payload={}){
     const id=++state.seq;let worker,finished=false;
     function finish(error,data){if(finished)return;finished=true;worker?.terminate();if(state.seq===id){state.job=null;setBusy(false);}error?reject(error):resolve(data);}
     try{
-      worker=new Worker(new URL('./worker.js?v=20261023.1',import.meta.url),{type:'module'});state.job={id,worker,cancel:()=>finish(cancelledError())};
+      worker=new Worker(new URL('./worker.js?v=20261023.2',import.meta.url),{type:'module'});state.job={id,worker,cancel:()=>finish(cancelledError())};
       worker.onmessage=({data})=>{if(finished||data.id!==id||state.job?.id!==id)return;if(data.type==='progress'){reportProgress(data);return;}const error=data.type==='error'?Object.assign(new Error(data.message),{code:data.code,details:data.details}):null;finish(error,data);};
       worker.onerror=e=>finish(new Error(e.message||'The geometry worker could not start. Reload the app and try again.'));
       worker.onmessageerror=()=>finish(new Error('The geometry worker returned unreadable data. Retry with a smaller file or reload the app.'));

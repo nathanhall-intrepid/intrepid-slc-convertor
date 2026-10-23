@@ -31,7 +31,7 @@ export class BuildViewer {
     try {
       this.renderer=new THREE.WebGLRenderer({antialias:true,alpha:false,powerPreference:'high-performance'});
       this.renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
-      this.renderer.setClearColor('#080909',1);this.renderer.outputColorSpace=THREE.SRGBColorSpace;
+      this.renderer.setClearColor('#0f110f',1);this.renderer.outputColorSpace=THREE.SRGBColorSpace;
       this.renderer.toneMapping=THREE.NoToneMapping;
       this.canvas=this.renderer.domElement;this.canvas.setAttribute('role','img');
       this.canvas.setAttribute('aria-label','Part geometry preview with layer-thickness colors. In side view, click to inspect a height or Shift-drag to select a height range.');

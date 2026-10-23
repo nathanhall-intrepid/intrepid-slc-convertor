@@ -1,7 +1,7 @@
 /** Browser-local job worker. Cancel a job by terminating its worker instance. */
-import { ENGINE_LIMITS, parseSTL, analyzeMesh, repairMesh, computeBounds, createDemoMesh, planLayers, sliceLayerIterator, sliceAt } from './engine.js?v=20261023.1';
-import { packBuild, validateLayout } from './layout.js?v=20261023.1';
-import { createSLCEncoder, decodeSLC, samplingTableForLayers } from './slc.js?v=20261023.1';
+import { ENGINE_LIMITS, parseSTL, analyzeMesh, repairMesh, computeBounds, createDemoMesh, planLayers, sliceLayerIterator, sliceAt } from './engine.js?v=20261023.2';
+import { packBuild, validateLayout } from './layout.js?v=20261023.2';
+import { createSLCEncoder, decodeSLC, samplingTableForLayers } from './slc.js?v=20261023.2';
 
 const MAX_PARTS = 32;
 const fail = (message, code = 'INVALID_JOB', details = {}) => { const error = new Error(message); error.code = code; error.details = details; throw error; };
