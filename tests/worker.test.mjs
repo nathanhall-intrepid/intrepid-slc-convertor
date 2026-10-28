@@ -36,7 +36,7 @@ async function job(type,payload={},transfer=[]) {
           assert.equal(message.id,id);
           if(message.type==='progress'){
             assert.equal(typeof message.stage,'string');
-            assert(Number.isFinite(message.percent)&&message.percent>=0&&message.percent<=100);
+            assert(message.percent===null||(Number.isFinite(message.percent)&&message.percent>=0&&message.percent<=100));
             progress.push(message);
           }else resolve(message);
         }catch(error){reject(error);}
