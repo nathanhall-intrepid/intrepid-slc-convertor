@@ -217,7 +217,7 @@ function simplifyRing(points,tolerance){
 function orient(a,b,c){return (b[0]-a[0])*(c[1]-a[1])-(b[1]-a[1])*(c[0]-a[0]);}
 function segmentsCross(a,b,c,d,tol){
   const o1=orient(a,b,c),o2=orient(a,b,d),o3=orient(c,d,a),o4=orient(c,d,b);
-  const e1=tol*Math.max(1,Math.hypot(b[0]-a[0],b[1]-a[1])),e2=tol*Math.max(1,Math.hypot(d[0]-c[0],d[1]-c[1]));
+  const e1=tol*Math.hypot(b[0]-a[0],b[1]-a[1]),e2=tol*Math.hypot(d[0]-c[0],d[1]-c[1]);
   if(((o1>e1&&o2<-e1)||(o1<-e1&&o2>e1))&&((o3>e2&&o4<-e2)||(o3<-e2&&o4>e2)))return true;
   const on=(p,u,v)=>p[0]>=Math.min(u[0],v[0])-tol&&p[0]<=Math.max(u[0],v[0])+tol&&p[1]>=Math.min(u[1],v[1])-tol&&p[1]<=Math.max(u[1],v[1])+tol;
   return (Math.abs(o1)<=e1&&on(c,a,b))||(Math.abs(o2)<=e1&&on(d,a,b))||(Math.abs(o3)<=e2&&on(a,c,d))||(Math.abs(o4)<=e2&&on(b,c,d));
@@ -232,7 +232,7 @@ function validateRingIntersections(rings,tolerance){
     for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++){
       if(++entries>3000000)fail('Contour intersection check exceeds the browser complexity limit.','CONTOUR_TOO_COMPLEX');
       const key=`${x},${y}`,bucket=buckets.get(key)||[];
-      for(const otherId of bucket){if(seen.has(otherId))continue;seen.add(otherId);const q=segments[otherId];if(s.r===q.r&&(s.i===q.i||(s.i+1)%s.n===q.i||(q.i+1)%q.n===s.i))continue;if(segmentsCross(s.a,s.b,q.a,q.b,tolerance))fail('Slice contours intersect or touch. Separate overlapping parts or repair the STL.','INTERSECTING_CONTOURS');}
+      for(const otherId of bucket){if(seen.has(otherId))continue;seen.add(otherId);const q=segments[otherId];if(s.r===q.r&&(s.i===q.i||(s.i+1)%s.n===q.i||(q.i+1)%q.n===s.i))continue;if(segmentsCross(s.a,s.b,q.a,q.b,tolerance))fail('Slice contours intersect or touch. Separate overlapping parts or repair the STL.','INTERSECTING_CONTOURS',{segments:[{ring:s.r,index:s.i,a:s.a,b:s.b},{ring:q.r,index:q.i,a:q.a,b:q.b}],toleranceMm:tolerance});}
       bucket.push(id);buckets.set(key,bucket);
     }
   }
@@ -271,7 +271,7 @@ function sliceExact(meshes,zMm,{validate=true}={}) {
     if(ring.length<3||signedArea(ring)===0)fail('A slice contour collapses at this sampling plane. Inspect the mesh junction or use a nearby plane.','DEGENERATE_CONTOUR',{zMm});
     rings.push(ring);maxNormals.push(maxNz);enclosures.push({ring,minZ:enclosureMinZ,maxZ:enclosureMaxZ,exactVertical:maxNz<1e-12});inputSigns.push(Math.abs(directionBalance)===steps?Math.sign(signedArea(ring))*Math.sign(directionBalance):0);
   }
-  if(validate)validateRingIntersections(rings,tolerance*.1);
+  if(validate)try{validateRingIntersections(rings,tolerance*.1);}catch(error){error.details={...error.details,zMm};throw error;}
   const rb=rings.map(ringBounds),depths=rings.map((r,i)=>rings.reduce((depth,q,j)=>depth+(i!==j&&rb[j].min[0]<=r[0][0]&&rb[j].max[0]>=r[0][0]&&rb[j].min[1]<=r[0][1]&&rb[j].max[1]>=r[0][1]&&pointInRing(r[0],q)?1:0),0));
   let areaMm2=0,outerMaxNormalZ=0;
   for(let i=0;i<rings.length;i++){const desired=depths[i]%2===0?1:-1;

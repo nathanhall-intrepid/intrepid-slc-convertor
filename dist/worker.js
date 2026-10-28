@@ -1,7 +1,8 @@
+import {repairForSlicing, createContourPrecisionRepair} from './solid-repair.js?v=20261028.3';
 /** Browser-local job worker. Cancel a job by terminating its worker instance. */
-import { ENGINE_LIMITS, parseSTL, analyzeMesh, repairMesh, computeBounds, createDemoMesh, planLayers, sliceLayerIterator, sliceAt } from './engine.js?v=20261028.2';
-import { packBuild, validateLayout } from './layout.js?v=20261028.2';
-import { createSLCEncoder, decodeSLC, samplingTableForLayers } from './slc.js?v=20261028.2';
+import { ENGINE_LIMITS, parseSTL, analyzeMesh, computeBounds, createDemoMesh, planLayers, sliceLayerIterator, sliceAt } from './engine.js?v=20261028.3';
+import { packBuild, validateLayout } from './layout.js?v=20261028.3';
+import { createSLCEncoder, decodeSLC, samplingTableForLayers } from './slc.js?v=20261028.3';
 
 const MAX_PARTS = 32;
 const fail = (message, code = 'INVALID_JOB', details = {}) => { const error = new Error(message); error.code = code; error.details = details; throw error; };
@@ -69,7 +70,7 @@ function verifyDecoded(decoded, plan, layerMetadata) {
 }
 
 /** Exported for integration tests; emit(message, transferables) matches postMessage. */
-export function handleWorkerRequest(request, emit) {
+export async function handleWorkerRequest(request, emit) {
   const id = request?.id;
   const progress = value => emit({ id, type: 'progress', ...value, percent: Number.isFinite(value.percent) ? Math.min(100, Math.max(0, value.percent)) : null });
   try {
@@ -77,7 +78,8 @@ export function handleWorkerRequest(request, emit) {
     if (request.type === 'parse') {
       if (!Array.isArray(request.files) || !request.files.length || request.files.length > MAX_PARTS) fail(`Drop between 1 and ${MAX_PARTS} STL files.`, 'PART_LIMIT');
       let totalBytes = 0;
-      const parsed = request.files.map((file, i) => {
+      const parsed = [];
+      for (const [i, file] of request.files.entries()) {
         if (!(file.buffer instanceof ArrayBuffer)) fail(`File ${i + 1} has no readable buffer.`, 'INVALID_STL');
         totalBytes += file.buffer.byteLength;
         if (totalBytes > ENGINE_LIMITS.maxFileBytes) fail('The combined import exceeds 200 MB. Load a smaller build.', 'FILE_TOO_LARGE');
@@ -85,10 +87,10 @@ export function handleWorkerRequest(request, emit) {
         const onProgress = value => progress({ unit: 'triangles', ...value, fileName, fileIndex: i + 1, fileCount: request.files.length });
         const mesh = parseSTL(file.buffer, fileName, { unitScale: file.unitScale ?? 1, onProgress });
         mesh.id = safeName(file.id, `part-${i + 1}`);
-        const repaired = repairMesh(mesh, {}, onProgress);
+        const repaired = await repairForSlicing(mesh, onProgress);
         repaired.mesh.repair = repaired.report;
-        return repaired.mesh;
-      });
+        parsed.push(repaired.mesh);
+      }
       const meshes = parsed, diagnostics = diagnosticsFor(meshes, progress);
       emit({ id, type: 'parsed', meshes: meshes.map(publicMesh), diagnostics }); return;
     }
@@ -135,7 +137,8 @@ export function handleWorkerRequest(request, emit) {
       const plan = checkedPlan(request.plan, meshes);
       assertPrintable(meshes, progress);
       const bounds = buildBounds(meshes);
-      const encoder = createSLCEncoder(plan.layers, { extents: { min: [bounds.min[0], bounds.min[1], 0], max: [bounds.max[0], bounds.max[1], plan.heightMm] } });
+      const repairQuantizedContours = await createContourPrecisionRepair();
+      const encoder = createSLCEncoder(plan.layers, { repairQuantizedContours, extents: { min: [bounds.min[0], bounds.min[1], 0], max: [bounds.max[0], bounds.max[1], plan.heightMm] } });
       const iterator = sliceLayerIterator(meshes, plan, progress);
       let result;
       // Each contour is normalized, checked and read back before its arrays are
@@ -151,9 +154,10 @@ export function handleWorkerRequest(request, emit) {
       progress({ stage: 'verifying', current: 1, total: 1, percent: 100 });
       const collapsedVertices = encoder.stats.collapsedVertices || 0;
       const warnings = [...(sliced.warnings || [])];
+      if (encoder.stats.precisionRepairs.length) warnings.push(`${encoder.stats.precisionRepairs.length} layers needed contour cleanup after SLC coordinate rounding. Changes were checked within 1 µm of the original boundaries; tiny gaps or slivers may merge. Details are in the recipe.`);
       if (collapsedVertices) warnings.push(`${collapsedVertices} consecutive contour points became identical at SLC float32 precision and were coalesced; closed contours and winding were verified after conversion.`);
       const buffer = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes.buffer : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-      emit({ id, type: 'exported', buffer, layerCount: plan.layers.length, byteLength: buffer.byteLength, warnings, recovery: { recoveredPlanes: sliced.recoveredPlanes || 0, maxPlaneShiftMm: sliced.maxPlaneShiftMm || 0, collapsedVertices }, contourVertexCount: sliced.contourVertexCount }, [buffer]); return;
+      emit({ id, type: 'exported', buffer, layerCount: plan.layers.length, byteLength: buffer.byteLength, warnings, recovery: { recoveredPlanes: sliced.recoveredPlanes || 0, maxPlaneShiftMm: sliced.maxPlaneShiftMm || 0, collapsedVertices, precisionRepairs: encoder.stats.precisionRepairs }, contourVertexCount: sliced.contourVertexCount }, [buffer]); return;
     }
     fail(`Unknown worker task: ${request.type}.`, 'UNKNOWN_JOB');
   } catch (error) {

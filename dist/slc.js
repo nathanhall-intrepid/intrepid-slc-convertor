@@ -12,7 +12,7 @@ const SENTINEL = 0xffffffff;
 export class SLCError extends Error {
   constructor(message, code = 'invalid-slc') { super(message); this.name = 'SLCError'; this.code = code; }
 }
-const fail = (message, code) => { throw new SLCError(message, code); };
+const fail = (message, code, details = {}) => { const error = new SLCError(message, code); error.details = details; throw error; };
 const finite = (x, name) => { if (typeof x !== 'number' || !Number.isFinite(x)) fail(`${name} must be finite.`); return x; };
 const f32 = (x, name) => { finite(x, name); const r = Math.fround(x); if (!Number.isFinite(r)) fail(`${name} exceeds SLC float32 range.`); return r; };
 const near = (a, b, tol = 1e-7) => Math.abs(a - b) <= tol;
@@ -36,7 +36,7 @@ function pointInRing(p, r) {
 function orientation(a, b, c) {
   const x = (b[0] - a[0]) * (c[1] - a[1]);
   const y = (b[1] - a[1]) * (c[0] - a[0]);
-  const v = x - y, eps = 1e-13 * (Math.abs(x) + Math.abs(y) + 1);
+  const v = x - y, eps = Number.EPSILON * 8 * (Math.abs(x) + Math.abs(y));
   return Math.abs(v) <= eps ? 0 : Math.sign(v);
 }
 function onSegment(a, b, c) {
@@ -94,7 +94,7 @@ function validateRings(inputs, label, maxChecks = 10000000, quantize = true) {
       if (++checks > maxChecks) fail(`${label}: geometry validation budget exceeded; simplify the STL before exporting.`, 'geometry-complexity');
       if (prev.maxY < edge.minY || edge.maxY < prev.minY) continue;
       if (edge.ri === prev.ri && (Math.abs(edge.i - prev.i) === 1 || Math.abs(edge.i - prev.i) === edge.n - 1)) continue;
-      if (intersects(prev.a, prev.b, edge.a, edge.b)) fail(`${label}: contours intersect or touch; a closed nonintersecting slice is required.`, 'contour-intersection');
+      if (intersects(prev.a, prev.b, edge.a, edge.b)) fail(`${label}: contours intersect or touch; a closed nonintersecting slice is required.`, 'contour-intersection', {segments: [{ring:prev.ri,a:prev.a,b:prev.b},{ring:edge.ri,a:edge.a,b:edge.b}]});
     }
     active.push(edge);
   }
@@ -188,7 +188,7 @@ export function createSLCEncoder(planLayers, options = {}) {
   const maxBytes = options.maxBytes ?? MAX_BYTES;
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) fail('SLC byte limit must be a positive safe integer.');
   let state = 'open', chunkBytes = 0;
-  const stats = { layerCount: 0, verifiedLayers: 0, contourVertexCount: 0, encodedVertexCount: 0, collapsedVertices: 0, byteLength: 0 };
+  const stats = { layerCount: 0, verifiedLayers: 0, contourVertexCount: 0, encodedVertexCount: 0, collapsedVertices: 0, precisionRepairs: [], byteLength: 0 };
   return {
     stats, layerMetadata,
     addLayer(layer) {
@@ -196,7 +196,17 @@ export function createSLCEncoder(planLayers, options = {}) {
       try {
         const index = stats.layerCount, expected = schedule[index];
         if (!expected || !layer || layer.thicknessUm !== expected.thicknessUm || !near(layer.zMm, expected.zMm)) fail(`Layer ${index + 1} does not match the planned schedule.`, 'layer-schedule');
-        const rings = validateRings(layer.rings, `Layer ${index + 1}`, options.maxGeometryChecks ?? 10000000);
+        const budget = options.maxGeometryChecks ?? 10000000, label = `Layer ${index + 1}`;
+        let rings;
+        try { rings = validateRings(layer.rings, label, budget); }
+        catch (error) {
+          if (!options.repairQuantizedContours || !['invalid-slc','contour-intersection','contour-winding'].includes(error.code)) throw error;
+          // Never use precision recovery to hide an existing opening, crossing,
+          // or cavity winding defect in the full-precision source contours.
+          validateRings(layer.rings, `${label} before float32 conversion`, budget, false);
+          const repaired = options.repairQuantizedContours(layer.rings, candidate => validateRings(candidate, label, budget));
+          rings = repaired.rings; stats.precisionRepairs.push({layerIndex:index,zMm:expected.zMm,...repaired.report});
+        }
         let length = 8, vertexCount = 0, collapsedVertices = 0;
         for (const r of rings) {
           length += 8 + (r.ring.length + 1) * 8; vertexCount += r.ring.length; collapsedVertices += r.collapsedVertices;

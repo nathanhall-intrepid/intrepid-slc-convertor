@@ -1,7 +1,7 @@
-import {movePartXY} from './placement.js?v=20261028.2';
-import {BuildViewer} from './viewer.js?v=20261028.2';
-import {LayerCallouts} from './callouts.js?v=20261028.2';
-import {transformMesh} from './engine.js?v=20261028.2';
+import {movePartXY} from './placement.js?v=20261028.3';
+import {BuildViewer} from './viewer.js?v=20261028.3';
+import {LayerCallouts} from './callouts.js?v=20261028.3';
+import {transformMesh} from './engine.js?v=20261028.3';
 import {DEMO_PROFILE,validateProfile,validateCycle,compareTimes,exposureSeconds,formatDuration} from './process.js';
 
 const $=id=>document.getElementById(id), $$=s=>[...document.querySelectorAll(s)];
@@ -67,7 +67,7 @@ function rpc(type,payload={}){
     const id=++state.seq;let worker,finished=false;
     function finish(error,data){if(finished)return;finished=true;worker?.terminate();if(state.seq===id){state.job=null;setBusy(false);}error?reject(error):resolve(data);}
     try{
-      worker=new Worker(new URL('./worker.js?v=20261028.2',import.meta.url),{type:'module'});state.job={id,worker,cancel:()=>finish(cancelledError())};
+      worker=new Worker(new URL('./worker.js?v=20261028.3',import.meta.url),{type:'module'});state.job={id,worker,cancel:()=>finish(cancelledError())};
       worker.onmessage=({data})=>{if(finished||data.id!==id||state.job?.id!==id)return;if(data.type==='progress'){reportProgress(data);return;}const error=data.type==='error'?Object.assign(new Error(data.message),{code:data.code,details:data.details}):null;finish(error,data);};
       worker.onerror=e=>finish(new Error(e.message||'The geometry worker could not start. Reload the app and try again.'));
       worker.onmessageerror=()=>finish(new Error('The geometry worker returned unreadable data. Retry with a smaller file or reload the app.'));
@@ -129,6 +129,7 @@ function repairSummary(diagnostic){
   const repair=diagnostic?.repair||diagnostic?.repairReport;if(!repair)return '';
   if(typeof repair.summary==='string'&&repair.summary)return repair.summary;
   const changes=[];
+  if(repair.solidUnion)changes.push(`${repair.solidUnion.shells.toLocaleString()} solid shells combined · sliver cleanup ≤0.1 µm`);
   for(const [key,label] of [['weldedVertices','vertices welded'],['removedDegenerateTriangles','degenerate triangles removed'],['removedDuplicateTriangles','duplicate triangles removed'],['reorientedTriangles','triangles reoriented']])if(Number.isFinite(repair[key])&&repair[key]>0)changes.push(`${repair[key].toLocaleString()} ${label}`);
   if(!changes.length&&Array.isArray(repair.actions))changes.push(...repair.actions.filter(action=>typeof action==='string'));
   return changes.length?changes.join(' · '):repair.changed?'Mesh cleanup applied; inspect the geometry checks.':'';
@@ -176,7 +177,7 @@ function drawExposure(profile){const c=$('exposureChart'),w=c.clientWidth,h=130,
 
 function download(bytes,type,name){const url=URL.createObjectURL(new Blob([bytes],{type})),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);}
 function safeName(){return state.sources.length===1?state.sources[0].name.replace(/\.stl$/i,'').replace(/[^a-z0-9_-]+/gi,'-').slice(0,80):'intrepid-build';}
-function recipe(){const p=validateProfile(profileFromForm()),c=validateCycle(cycleFromForm());if(!p.valid||!c.valid)throw new Error([...p.errors,...c.errors].join(' '));return {format:'intrepid-layer-studio-v1',createdAt:new Date().toISOString(),units:'mm',options:planOptions(),profile:profileFromForm(),cycle:cycleFromForm(),parts:state.sources.map(m=>({id:m.id,name:m.name,triangleCount:m.triangleCount,bounds:m.bounds})),placements:state.placements,exportReport:state.exportReport,layerConvention:'SLC minimum Z, midpoint sampled contours',plan:state.plan?{heightMm:state.plan.heightMm,layers:state.plan.layers.map(l=>({zStartMm:l.zStartMm,zMm:l.zMm,thicknessUm:l.thicknessUm,reason:l.reason}))}:null,notes:['STL geometry is not included. Reload the original files, confirm units, and reapply any manual rotations when reusing these settings.','Ec/Dp time predictions do not replace printer validation.']};}
+function recipe(){const p=validateProfile(profileFromForm()),c=validateCycle(cycleFromForm());if(!p.valid||!c.valid)throw new Error([...p.errors,...c.errors].join(' '));return {format:'intrepid-layer-studio-v1',createdAt:new Date().toISOString(),units:'mm',options:planOptions(),profile:profileFromForm(),cycle:cycleFromForm(),parts:state.sources.map(m=>({id:m.id,name:m.name,triangleCount:m.triangleCount,bounds:m.bounds,repair:m.repair})),placements:state.placements,exportReport:state.exportReport,layerConvention:'SLC minimum Z, midpoint sampled contours',plan:state.plan?{heightMm:state.plan.heightMm,layers:state.plan.layers.map(l=>({zStartMm:l.zStartMm,zMm:l.zMm,thicknessUm:l.thicknessUm,reason:l.reason}))}:null,notes:['STL geometry is not included. Reload the original files, confirm units, and reapply any manual rotations when reusing these settings.','Ec/Dp time predictions do not replace printer validation.']};}
 async function exportSLC(){
   if(!state.plan||state.busy)return;
   try{
