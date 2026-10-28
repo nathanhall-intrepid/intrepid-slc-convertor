@@ -72,6 +72,7 @@ export class LayerCallouts {
     this._queue = () => this.refresh();
     this.canvas = viewer.canvas;
     this.canvas?.addEventListener('wheel', this._queue, {passive: true});
+    this.canvas?.addEventListener('viewchange', this._queue);
     if (typeof ResizeObserver !== 'undefined') {
       this.observer = new ResizeObserver(this._queue);
       this.observer.observe(container);
@@ -203,6 +204,7 @@ export class LayerCallouts {
     this.observer?.disconnect();
     window.removeEventListener('resize', this._queue);
     this.canvas?.removeEventListener('wheel', this._queue);
+    this.canvas?.removeEventListener('viewchange', this._queue);
     this.root.remove();
     this.nodes.clear();
   }

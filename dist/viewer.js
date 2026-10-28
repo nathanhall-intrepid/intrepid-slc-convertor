@@ -34,7 +34,7 @@ export class BuildViewer {
       this.renderer.setClearColor('#0f110f',1);this.renderer.outputColorSpace=THREE.SRGBColorSpace;
       this.renderer.toneMapping=THREE.NoToneMapping;
       this.canvas=this.renderer.domElement;this.canvas.setAttribute('role','img');
-      this.canvas.setAttribute('aria-label','Part geometry preview with layer-thickness colors. In side view, click to inspect a height or Shift-drag to select a height range.');
+      this.canvas.setAttribute('aria-label','Part geometry preview with layer-thickness colors. Drag to pan in side or plate view. In side view, click to inspect a height or Shift-drag to select a height range. In 3D, right-drag to pan.');
       Object.assign(this.canvas.style,{display:'block',width:'100%',height:'100%',touchAction:'none',outline:'none'});
       this.container.prepend(this.canvas);
       this.scene=new THREE.Scene();this.scene.background=new THREE.Color('#080d0d');
@@ -97,7 +97,8 @@ export class BuildViewer {
 
   _showError(message){this.status.textContent=message;this.status.style.display='block';}
   _emptyTexture(){const t=new THREE.DataTexture(new Uint8Array([205,219,214,255]),1,1,THREE.RGBAFormat);t.colorSpace=THREE.SRGBColorSpace;t.needsUpdate=true;return t;}
-  requestRender(){this.dirty=true;}
+  requestRender(){this.dirty=true;this.canvas?.dispatchEvent(new Event("viewchange"));}
+  resetView(){if(this.failed)return;this._fitCamera();this.requestRender();}
 
   setMeshes(meshes){
     this.meshes=Array.isArray(meshes)?meshes:[];if(this.failed)return;
@@ -136,7 +137,7 @@ export class BuildViewer {
     // side view after switching from 3D.
     this.controls.dispose();this.controls=new OrbitControls(this.camera,this.canvas);this.controls.enableDamping=true;this.controls.dampingFactor=.08;this.controls.screenSpacePanning=true;
     this.controls.addEventListener('change',()=>this.requestRender());this.controls.enabled=view==='3d';this.controls.enableRotate=view==='3d';this.controls.enablePan=view==='3d';this.controls.enableZoom=view==='3d';
-    this.canvas.style.cursor=view==='side'?'crosshair':view==='3d'?'grab':'default';this._fitCamera();this._updateHelpers();this.requestRender();
+    this.canvas.style.cursor='grab';this._fitCamera();this._updateHelpers();this.requestRender();
   }
 
   setSelection(fromMm,toMm){
@@ -215,12 +216,30 @@ export class BuildViewer {
     if(this.failed||!Number.isFinite(zMm))return null;const center=this.bounds.getCenter(new THREE.Vector3()),point=new THREE.Vector3(center.x,center.y,zMm).project(this.camera);return (1-point.y)*this.canvas.clientHeight/2;
   }
   _handlePointerDown(event){
-    if(this.mode!=='side'||event.button!==0)return;const z=this._heightAt(event);if(z===null)return;
-    if(event.shiftKey){event.preventDefault();event.stopPropagation();this.drag={start:z,current:z};this.canvas.setPointerCapture(event.pointerId);}
-    else{this.setLayer(z);this.onLayerSelect?.(z);}
+    if(this.mode==='3d'||event.button!==0)return;
+    if(this.mode==='side'&&event.shiftKey){const z=this._heightAt(event);if(z===null)return;this.drag={start:z,current:z};}
+    else this.pan={id:event.pointerId,x:event.clientX,y:event.clientY,lastX:event.clientX,lastY:event.clientY,moved:false};
+    event.preventDefault();this.canvas.setPointerCapture(event.pointerId);this.canvas.style.cursor=this.drag?'crosshair':'grabbing';
   }
-  _handlePointerMove(event){if(!this.drag)return;const z=this._heightAt(event);if(z===null)return;this.drag.current=z;this.setSelection(Math.min(z,this.drag.start),Math.max(z,this.drag.start));}
-  _handlePointerUp(event){if(!this.drag)return;const {start,current}=this.drag;this.drag=null;try{this.canvas.releasePointerCapture(event.pointerId);}catch{}const lo=Math.round(Math.min(start,current)*20)/20,hi=Math.round(Math.max(start,current)*20)/20;if(hi-lo>=.05){this.setSelection(lo,hi);this.onRangeSelect?.(lo,hi);}else this.setSelection(null,null);}
+  _handlePointerMove(event){
+    if(this.pan){
+      const p=this.pan;if(event.pointerId!==p.id)return;
+      if(Math.hypot(event.clientX-p.x,event.clientY-p.y)>3)p.moved=true;
+      if(!p.moved)return;
+      const dx=event.clientX-p.lastX,dy=event.clientY-p.lastY;p.lastX=event.clientX;p.lastY=event.clientY;
+      const c=this.ortho,rect=this.canvas.getBoundingClientRect();
+      const right=new THREE.Vector3().setFromMatrixColumn(c.matrix,0),up=new THREE.Vector3().setFromMatrixColumn(c.matrix,1);
+      const offset=right.multiplyScalar(-dx*(c.right-c.left)/(rect.width*c.zoom)).add(up.multiplyScalar(dy*(c.top-c.bottom)/(rect.height*c.zoom)));
+      c.position.add(offset);this.controls.target.add(offset);c.updateMatrixWorld();this.requestRender();return;
+    }
+    if(!this.drag)return;const z=this._heightAt(event);if(z===null)return;this.drag.current=z;this.setSelection(Math.min(z,this.drag.start),Math.max(z,this.drag.start));
+  }
+  _handlePointerUp(event){
+    const cancelled=event.type==='pointercancel';
+    if(this.pan){const p=this.pan;this.pan=null;if(!cancelled&&!p.moved&&this.mode==='side'){const z=this._heightAt(event);if(z!==null){this.setLayer(z);this.onLayerSelect?.(z);}}}
+    if(this.drag){const {start,current}=this.drag;this.drag=null;if(!cancelled){const lo=Math.round(Math.min(start,current)*20)/20,hi=Math.round(Math.max(start,current)*20)/20;if(hi-lo>=.05){this.setSelection(lo,hi);this.onRangeSelect?.(lo,hi);}else this.setSelection(null,null);}}
+    try{this.canvas.releasePointerCapture(event.pointerId);}catch{}this.canvas.style.cursor='grab';
+  }
 
   resize(){
     if(this.failed||!this.renderer)return;const rect=this.container.getBoundingClientRect();if(rect.width<1||rect.height<1)return;
