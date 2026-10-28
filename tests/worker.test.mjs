@@ -170,3 +170,12 @@ test('unresolved holes retain the offending slice height in worker diagnostics',
   assert.equal(error.details.degree,1);
   assert(!error.buffer);
 });
+
+test('manual XY survives planning and reaches SLC contours',async()=>{
+ const {movePartXY}=await import('../dist/placement.js');
+ const meshes=movePartXY([part(1)],'box',20,30,bed);
+ const planned=expectType(await job('plan',{meshes,pack:false,options:{bed,baselineUm:100,preferredUm:150,supportEndMm:0,automatic:false}}),'planned');
+ assert.equal(planned.meshes[0].bounds.min[0],20);assert.equal(planned.meshes[0].bounds.min[1],30);
+ const exported=expectType(await job('export',{meshes:planned.meshes,plan:planned.plan}),'exported');
+ for(const layer of decodeSLC(exported.buffer).layers){const pts=layer.rings.flat();assert.equal(Math.min(...pts.map(p=>p[0])),20);assert.equal(Math.max(...pts.map(p=>p[0])),22);assert.equal(Math.min(...pts.map(p=>p[1])),30);assert.equal(Math.max(...pts.map(p=>p[1])),33);}
+});
