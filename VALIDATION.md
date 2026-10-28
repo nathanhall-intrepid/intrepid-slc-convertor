@@ -24,3 +24,11 @@ The `dist/` folder can be served by static web hosting. Geometry and profiles ar
 ## Intrepid SVG header compatibility
 
 A header-only control in Intrepid SVG Converter 2.1.0 confirmed that setting EXTENTS maximum Z to the last contour plane resolves a conversion stall. The binary sampling table, contour records, and final-layer-top sentinel remained identical. Both fixed and variable schedule controls converted successfully. The writer now follows this contour-plane header convention even when model bounds are supplied. Regression checks verify mixed layers, a single layer, preserved XY bounds and unchanged final top. This is importer compatibility verification, not physical printer validation.
+
+## Automatic solid and SLC precision repair (2026-10-28)
+
+The import worker combines overlapping closed, outward-oriented shells using bundled Manifold 3.5.4. Every resulting mesh is rechecked for exact-coordinate edge closure, consistent winding, degenerate facets, positive volume and bounds. Negative cavity shells and unresolved openings remain unchanged. Intersection sliver cleanup uses 0.1 µm tolerance.
+
+SLC recovery is restricted to full-precision contours that already pass validation. If float32 conversion creates a conflict, polygon cleanup is checked against a 1 µm boundary envelope, then closure, nesting, winding and every emitted layer are verified again. Reports record affected layers, area changes and any tiny closing operation. These changes may merge submicron gaps or remove slivers.
+
+Synthetic regressions cover overlapping solids, a shared non-manifold edge, unchanged disjoint solids, cavity preservation, unresolved missing faces, short-edge intersection precision and float32 notch collapse. A local support-heavy fixture with 368,808 original triangles and 227 non-manifold edges was repaired to 713,748 triangles with zero open/non-manifold edges and unchanged overall bounds. Its complete 102-layer adaptive SLC (22,604,549 bytes) passed export/read-back validation. Two layers required bounded coordinate precision recovery. Customer geometry is not included in the public repository.

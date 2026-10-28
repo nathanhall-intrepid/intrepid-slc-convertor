@@ -26,7 +26,7 @@ Tests cover STL parsing and contour/planning invariants, packing, resin/time cal
 
 ## Integration
 
-Deploy the contents of `dist/` to static hosting with JavaScript modules served using the appropriate MIME type. The app needs no server-side geometry processing, database, API keys, or external runtime libraries. Three.js is vendored with its license in `dist/vendor/`.
+Deploy the contents of `dist/` to static hosting with JavaScript modules served using the appropriate MIME type. The app needs no server-side geometry processing, database, API keys, or external runtime libraries. Three.js and Manifold (including Clipper2 polygon operations) are vendored with their licenses in `dist/vendor/`.
 
 - `engine.js`: mesh parsing, diagnostics, transforms, slicing, and layer planning.
 - `layout.js`: conservative rectangular packing with optional additional Z rotation.
@@ -41,7 +41,7 @@ Public module contracts and engineering details are in `engine-contract.md`, `pr
 
 The nominal layer is 100 µm and preferred fast layer is 150 µm. Preferred thickness remains a user process choice, not an inferred material optimum. All exported physical layers are integer micrometers within 50–200 µm. Manual/support boundaries snap to 50 µm; terminal adjustments preserve the quantized model height without undersized layers.
 
-Packing is heuristic and preserves the supplied tilt. Each STL is placed independently; separate part/support files are not automatically grouped as an aligned assembly. Exterior-wall classification is geometric; nested contours are ignored but are not semantically identified as lattice. The support cutoff labels existing geometry and does not generate supports. Import performs reported duplicate/zero-area cleanup and conservative precision-seam stitching (at most 1 µm). General hole filling and unions of intersecting solids are not implemented. Shared-edge contour assembly prevents numerical false-open errors; unresolved defects retain structured diagnostics. The app does not predict Ra. Incomplete resin inputs produce incomplete timing, not a fabricated total; demo values are illustrative.
+Packing is heuristic and preserves the supplied tilt. Each STL is placed independently; separate part/support files are not automatically grouped as an aligned assembly. Exterior-wall classification is geometric; nested contours are ignored but are not semantically identified as lattice. The support cutoff labels existing geometry and does not generate supports. Import performs reported duplicate/zero-area cleanup and conservative precision-seam stitching (at most 1 µm). Overlapping closed, outward-oriented shells within one STL can be unioned automatically, with reported 0.1 µm sliver cleanup. Cavity shells are preserved. General hole filling is not implemented. Valid contours that collide only after float32 rounding can be repaired within a checked 1 µm boundary band; affected layers are recorded in the recipe. Shared-edge contour assembly prevents numerical false-open errors; unresolved defects retain structured diagnostics. The app does not predict Ra. Incomplete resin inputs produce incomplete timing, not a fabricated total; demo values are illustrative.
 
 The fixed progress panel covers file reading, geometry checks/cleanup, planning, slicing, encoding, and read-back verification. It displays measured byte counts or stage progress and supports cancellation during both file reading and worker processing.
 
