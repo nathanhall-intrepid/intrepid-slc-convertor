@@ -19,8 +19,8 @@ export function thicknessColor(thicknessUm) {
 
 /** CAD preview only. All STL/slice decisions remain in the geometry engine. */
 export class BuildViewer {
-  constructor(container,{onRangeSelect,onLayerSelect}={}) {
-    this.container=container;this.onRangeSelect=onRangeSelect;this.onLayerSelect=onLayerSelect;
+  constructor(container,{onRangeSelect,onLayerSelect,onPartSelect,onPartMove,canMovePart}={}) {
+    this.onPartSelect=onPartSelect;this.onPartMove=onPartMove;this.canMovePart=canMovePart;this.container=container;this.onRangeSelect=onRangeSelect;this.onLayerSelect=onLayerSelect;
     this.meshes=[];this.plan=null;this.mode='side';this.bed={width:760,depth:660};
     this.selection=null;this.layerZ=null;this.disposed=false;this.failed=false;this.dirty=true;
     this.bounds=new THREE.Box3(new THREE.Vector3(0,0,0),new THREE.Vector3(20,20,30));
@@ -107,8 +107,8 @@ export class BuildViewer {
     for(const source of this.meshes){
       if(!source.positions?.length)continue;
       const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.Float32BufferAttribute(source.positions,3));geometry.computeVertexNormals();geometry.computeBoundingBox();
-      const mesh=new THREE.Mesh(geometry,this.material);mesh.name=source.name||'Part';this.meshGroup.add(mesh);allBounds.union(geometry.boundingBox);
-      if(triangles<=120000){const edgeGeometry=new THREE.EdgesGeometry(geometry,28),edges=new THREE.LineSegments(edgeGeometry,new THREE.LineBasicMaterial({color:'#406955',transparent:true,opacity:.22}));edges.renderOrder=1;this.meshGroup.add(edges);}
+      const mesh=new THREE.Mesh(geometry,this.material);mesh.userData.partId=source.id;mesh.name=source.name||'Part';this.meshGroup.add(mesh);allBounds.union(geometry.boundingBox);
+      if(triangles<=120000){const edgeGeometry=new THREE.EdgesGeometry(geometry,28),edges=new THREE.LineSegments(edgeGeometry,new THREE.LineBasicMaterial({color:'#406955',transparent:true,opacity:.22}));edges.userData.partId=source.id;edges.renderOrder=1;this.meshGroup.add(edges);}
     }
     if(!allBounds.isEmpty())this.bounds=allBounds;
     this._fitCamera();this._updateHelpers();this.requestRender();
@@ -215,13 +215,23 @@ export class BuildViewer {
   heightToScreen(zMm){
     if(this.failed||!Number.isFinite(zMm))return null;const center=this.bounds.getCenter(new THREE.Vector3()),point=new THREE.Vector3(center.x,center.y,zMm).project(this.camera);return (1-point.y)*this.canvas.clientHeight/2;
   }
+  _platePoint(event){
+    const rect=this.canvas.getBoundingClientRect(),pointer=new THREE.Vector2((event.clientX-rect.left)/rect.width*2-1,-(event.clientY-rect.top)/rect.height*2+1),ray=new THREE.Raycaster();ray.setFromCamera(pointer,this.camera);
+    return {point:ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,0,1),0),new THREE.Vector3()),ray};
+  }
   _handlePointerDown(event){
     if(this.mode==='3d'||event.button!==0)return;
+    if(this.mode==='plate'){
+      const {point,ray}=this._platePoint(event),hit=ray.intersectObjects(this.meshGroup.children.filter(o=>o.isMesh),false)[0];
+      if(hit){if(this.canMovePart&&!this.canMovePart())return;const id=hit.object.userData.partId,mesh=this.meshes.find(m=>m.id===id);if(!mesh||!point)return;this.partDrag={id,start:point,x:mesh.bounds.min[0],y:mesh.bounds.min[1],dx:0,dy:0};this.onPartSelect?.(id);event.preventDefault();this.canvas.setPointerCapture(event.pointerId);this.canvas.style.cursor='grabbing';return;}
+    }
     if(this.mode==='side'&&event.shiftKey){const z=this._heightAt(event);if(z===null)return;this.drag={start:z,current:z};}
     else this.pan={id:event.pointerId,x:event.clientX,y:event.clientY,lastX:event.clientX,lastY:event.clientY,moved:false};
     event.preventDefault();this.canvas.setPointerCapture(event.pointerId);this.canvas.style.cursor=this.drag?'crosshair':'grabbing';
   }
   _handlePointerMove(event){
+    if(this.partDrag){const point=this._platePoint(event).point;if(!point)return;const d=this.partDrag;d.dx=point.x-d.start.x;d.dy=point.y-d.start.y;for(const obj of this.meshGroup.children)if(obj.userData.partId===d.id)obj.position.set(d.dx,d.dy,0);this.requestRender();return;}
+
     if(this.pan){
       const p=this.pan;if(event.pointerId!==p.id)return;
       if(Math.hypot(event.clientX-p.x,event.clientY-p.y)>3)p.moved=true;
@@ -236,6 +246,8 @@ export class BuildViewer {
   }
   _handlePointerUp(event){
     const cancelled=event.type==='pointercancel';
+    if(this.partDrag){const d=this.partDrag;this.partDrag=null;for(const obj of this.meshGroup.children)if(obj.userData.partId===d.id)obj.position.set(0,0,0);if(!cancelled&&(Math.abs(d.dx)>1e-6||Math.abs(d.dy)>1e-6))this.onPartMove?.(d.id,d.x+d.dx,d.y+d.dy);this.requestRender();}
+
     if(this.pan){const p=this.pan;this.pan=null;if(!cancelled&&!p.moved&&this.mode==='side'){const z=this._heightAt(event);if(z!==null){this.setLayer(z);this.onLayerSelect?.(z);}}}
     if(this.drag){const {start,current}=this.drag;this.drag=null;if(!cancelled){const lo=Math.round(Math.min(start,current)*20)/20,hi=Math.round(Math.max(start,current)*20)/20;if(hi-lo>=.05){this.setSelection(lo,hi);this.onRangeSelect?.(lo,hi);}else this.setSelection(null,null);}}
     try{this.canvas.releasePointerCapture(event.pointerId);}catch{}this.canvas.style.cursor='grab';
